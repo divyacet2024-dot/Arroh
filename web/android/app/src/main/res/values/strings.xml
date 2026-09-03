@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ARROH</string>
+    <string name="title_activity_main">ARROH</string>
+    <string name="package_name">in.arroh.medical</string>
+    <string name="custom_url_scheme">in.arroh.medical</string>
+</resources>

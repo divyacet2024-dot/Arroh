@@ -1,0 +1,71 @@
+@import 'tailwindcss';
+
+/*
+ * ARROH — rural healthcare design system.
+ * Calm, trustworthy, high-contrast. Uses Tailwind v4 CSS config + design tokens.
+ */
+
+@theme {
+  /* Clinical teal palette — calm and professional, not a generic AI gradient. */
+  --color-brand-50: #eff9f7;
+  --color-brand-100: #d8f0ec;
+  --color-brand-200: #b2e1da;
+  --color-brand-300: #80cbc2;
+  --color-brand-400: #4db0a5;
+  --color-brand-500: #2f9690;
+  --color-brand-600: #1f7773;
+  --color-brand-700: #1b5f5c;
+  --color-brand-800: #174d4b;
+  --color-brand-900: #123a38;
+  --color-brand-950: #082220;
+
+  /* Priority colors — always paired with a text label, never color alone. */
+  --color-priority-red: #b3261e;
+  --color-priority-amber: #8a5a00;
+  --color-priority-green: #1b5e20;
+
+  --font-sans: system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: theme(--color-slate-50);
+  color: theme(--color-slate-800);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Consistent, visible focus ring for keyboard navigation (a11y). */
+:focus-visible {
+  outline: 2px solid theme(--color-brand-600);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respect reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Thin, unobtrusive scrollbars for the desktop sidebar/tables. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: theme(--color-slate-300) transparent;
+}
