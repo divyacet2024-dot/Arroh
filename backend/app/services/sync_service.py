@@ -7,6 +7,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.case_taking import CaseSessionRow, persist_case_session
+from app.db.models.consultation import Consultation, DiagnosticRequest, DiagnosticResult, DischargePlan
 from app.db.models.follow_up import FollowUp, FollowUpTask
 from app.db.models.patient import Patient
 from app.db.models.referral import Referral
@@ -237,6 +238,32 @@ async def _persist_typed_entity(session: AsyncSession, record: TypedSyncRecordSc
             patient_id = patient.id
         follow_up, duplicate = await create_follow_up(session, patient_id=patient_id, follow_up_type=payload.get("follow_up_type", "COMMUNITY"), due_at=due_at, priority=payload.get("priority", "ROUTINE"), high_risk=bool(payload.get("high_risk", False)), notes=payload.get("notes"), source_reference=payload.get("source_reference"), local_uuid=record.local_uuid)
         return str(follow_up.id), duplicate
+
+    clinical_models = {"consultation": Consultation, "diagnostic_request": DiagnosticRequest, "diagnostic_result": DiagnosticResult, "discharge_plan": DischargePlan}
+    if record.entity_type in clinical_models:
+        model = clinical_models[record.entity_type]
+        existing = await session.scalar(select(model).where(model.local_uuid == record.local_uuid))
+        if existing:
+            if record.operation == "update":
+                for key, value in payload.items():
+                    if key not in {"id", "local_uuid"} and hasattr(model, key):
+                        setattr(existing, key, value)
+                await session.flush()
+            return str(existing.id), True
+        required = {
+            "consultation": ("patient_id", "doctor_id"),
+            "diagnostic_request": ("consultation_id", "investigation_name", "requested_by"),
+            "diagnostic_result": ("investigation_id", "result_value", "performed_at"),
+            "discharge_plan": ("consultation_id", "doctor_id", "diagnosis", "treatment_instructions", "emergency_return_instructions"),
+        }[record.entity_type]
+        if any(not payload.get(field) for field in required):
+            raise ValueError(f"{record.entity_type} payload is missing required fields")
+        for key in {"patient_id", "consultation_id", "investigation_id"}.intersection(payload):
+            payload[key] = uuid.UUID(str(payload[key]))
+        entity = model(local_uuid=record.local_uuid, **{key: value for key, value in payload.items() if hasattr(model, key) and key not in {"id", "local_uuid"}})
+        session.add(entity)
+        await session.flush()
+        return str(entity.id), False
 
     if record.entity_type == "visit":
         existing = await session.scalar(select(Visit).where(Visit.local_uuid == record.local_uuid))

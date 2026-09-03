@@ -23,6 +23,7 @@ async def create_care_prescription(payload: CarePrescriptionCreateSchema, db: As
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
     created_at = datetime.now(timezone.utc)
     prescription = CarePrescription(
+        consultation_id=payload.consultation_id,
         patient_id=payload.patient_id,
         doctor_id=payload.doctor_id,
         diagnosis=payload.diagnosis,

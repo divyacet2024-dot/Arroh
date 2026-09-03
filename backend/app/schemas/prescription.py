@@ -25,6 +25,7 @@ class CarePrescriptionCreateSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     patient_id: uuid.UUID
+    consultation_id: uuid.UUID | None = None
     doctor_id: str = Field(min_length=1, max_length=128)
     diagnosis: str = Field(min_length=2, max_length=2_000)
     medications: list[MedicationInstructionSchema] = Field(min_length=1, max_length=20)
@@ -39,6 +40,7 @@ class CarePrescriptionReadSchema(BaseModel):
 
     prescription_id: uuid.UUID
     patient_id: uuid.UUID
+    consultation_id: uuid.UUID | None = None
     doctor_id: str
     diagnosis: str
     medications: list[MedicationInstructionSchema]

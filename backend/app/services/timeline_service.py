@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.care_prescription import CarePrescription
 from app.db.models.follow_up import FollowUpTimelineEvent
+from app.db.models.consultation import ConsultationTimelineEvent
 from app.db.models.case_taking import CaseSessionRow
 from app.db.models.patient import Patient
 from app.db.models.referral import Referral
@@ -183,6 +184,13 @@ async def build_patient_timeline(session: AsyncSession, patient_id: uuid.UUID) -
                 "actor_id": event.actor_id,
                 "actor_role": event.actor_role,
             },
+        ))
+    consultation_events = (await session.scalars(select(ConsultationTimelineEvent).where(ConsultationTimelineEvent.patient_id == patient_id))).all()
+    for event in consultation_events:
+        events.append(TimelineEventSchema(
+            event_id=f"consultation-event-{event.id}", resource_type="Encounter", event_type=event.event_type,
+            occurred_at=_as_utc(event.occurred_at), summary=f"Doctor event: {event.event_type.lower().replace('_', ' ')}.",
+            details={**event.details, "consultation_id": str(event.consultation_id), "reference_id": event.reference_id, "actor_id": event.actor_id, "actor_role": event.actor_role},
         ))
     claim = await get_claim_for_patient(patient_id)
     if claim:

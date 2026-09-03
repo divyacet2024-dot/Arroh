@@ -77,7 +77,7 @@ class TypedSyncRecordSchema(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    entity_type: Literal["referral", "visit", "task", "follow_up", "case_session"]
+    entity_type: Literal["referral", "visit", "task", "follow_up", "case_session", "consultation", "diagnostic_request", "diagnostic_result", "discharge_plan"]
     local_uuid: str = Field(min_length=1, max_length=128)
     operation: Literal["create", "update"] = "create"
     payload: dict[str, Any] = Field(default_factory=dict)

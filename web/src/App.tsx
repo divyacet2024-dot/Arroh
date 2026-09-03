@@ -15,6 +15,7 @@ import { Inventory } from './pages/Inventory';
 import { Sync } from './pages/Sync';
 import { CaseTakingPage } from './pages/CaseTaking';
 import { CaseReview } from './pages/CaseReview';
+import { Consultation } from './pages/Consultation';
 import { Button } from './components/ui/Button';
 import { SearchX } from 'lucide-react';
 
@@ -55,6 +56,7 @@ export default function App() {
                 <Route path="/sync" element={<Sync />} />
                 <Route path="/case-taking" element={<CaseTakingPage />} />
                 <Route path="/case/:caseId" element={<CaseReview />} />
+                <Route path="/consultation" element={<Consultation />} />
                 <Route path="*" element={<NotFound />} />
               </Route>
             </Routes>

@@ -17,6 +17,7 @@ class CarePrescription(Base):
 
     prescription_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     patient_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("patients.id"), nullable=False, index=True)
+    consultation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("consultations.id"), nullable=True, index=True)
     doctor_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     diagnosis: Mapped[str] = mapped_column(Text, nullable=False)
     medications: Mapped[list[dict[str, object]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=False)

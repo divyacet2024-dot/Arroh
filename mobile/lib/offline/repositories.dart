@@ -803,3 +803,22 @@ class OfflineEntityRepository {
     await updateFollowUp(updated);
   }
 }
+
+class ConsultationDraftRepository {
+  ConsultationDraftRepository(this._db);
+  final ArrohDatabase _db;
+
+  Future<void> save({required String localUuid, String? patientLocalUuid, required Map<String, dynamic> payload}) async {
+    final db = await _db.database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.insert('consultation_drafts', {'local_uuid': localUuid, 'patient_local_uuid': patientLocalUuid, 'session_json': jsonEncode(payload), 'updated_at': now}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await SyncQueueRepository(_db).enqueue(entityType: 'consultation', entityLocalUuid: localUuid, operation: 'update', payload: payload);
+  }
+
+  Future<Map<String, dynamic>?> find(String localUuid) async {
+    final db = await _db.database;
+    final rows = await db.query('consultation_drafts', where: 'local_uuid = ?', whereArgs: [localUuid], limit: 1);
+    if (rows.isEmpty) return null;
+    return (jsonDecode(rows.first['session_json']! as String) as Map).cast<String, dynamic>();
+  }
+}

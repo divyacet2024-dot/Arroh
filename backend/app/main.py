@@ -21,6 +21,7 @@ from app.api.v1.teleconsult import router as teleconsult_router, signaling_route
 from app.api.v1.triage import router as triage_router
 from app.api.v1.timeline import router as timeline_router
 from app.api.v1.follow_ups import router as follow_ups_router
+from app.api.v1.consultations import router as consultations_router
 from app.api.v1.voice import router as voice_router
 from app.api.v1.voice_agent import router as voice_agent_router
 from app.api.v1.visits import router as visits_router
@@ -29,6 +30,7 @@ from app.core.config import get_settings
 from app.db.models import case_taking as _case_taking_models  # noqa: F401
 from app.db.models import referral_transition as _referral_transition_models  # noqa: F401
 from app.db.models import follow_up as _follow_up_models  # noqa: F401
+from app.db.models import consultation as _consultation_models  # noqa: F401
 from app.db.models import visit as _visit_models  # noqa: F401
 from app.db.session import Base, engine
 
@@ -103,6 +105,9 @@ async def create_development_schema() -> None:
             case_columns = (await connection.execute(text("PRAGMA table_info(case_sessions)"))).mappings().all()
             if case_columns and "local_uuid" not in {column["name"] for column in case_columns}:
                 await connection.execute(text("ALTER TABLE case_sessions ADD COLUMN local_uuid VARCHAR(128)"))
+            prescription_columns = (await connection.execute(text("PRAGMA table_info(care_prescriptions)"))).mappings().all()
+            if prescription_columns and "consultation_id" not in {column["name"] for column in prescription_columns}:
+                await connection.execute(text("ALTER TABLE care_prescriptions ADD COLUMN consultation_id CHAR(32)"))
 
 
 @app.on_event("shutdown")
@@ -157,6 +162,7 @@ app.include_router(referrals_router, prefix=settings.api_v1_prefix)
 app.include_router(care_prescriptions_router, prefix=settings.api_v1_prefix)
 app.include_router(timeline_router, prefix=settings.api_v1_prefix)
 app.include_router(follow_ups_router, prefix=settings.api_v1_prefix)
+app.include_router(consultations_router, prefix=settings.api_v1_prefix)
 app.include_router(voice_agent_router, prefix=settings.api_v1_prefix)
 app.include_router(visits_router, prefix=settings.api_v1_prefix)
 app.include_router(signaling_router)

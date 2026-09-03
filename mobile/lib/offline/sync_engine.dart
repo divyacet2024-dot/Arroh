@@ -201,6 +201,11 @@ class SyncEngine {
         return _syncViaBulk('emergency', payload, item.entityLocalUuid);
       case 'referral':
         return _syncViaBulk('referral', payload, item.entityLocalUuid);
+      case 'consultation':
+      case 'diagnostic_request':
+      case 'diagnostic_result':
+      case 'discharge_plan':
+        return _syncViaBulk(item.entityType, payload, item.entityLocalUuid);
       default:
         return null;
     }

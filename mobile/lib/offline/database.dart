@@ -46,7 +46,7 @@ class ArrohDatabase {
     final path = p.join(dbPath, 'arroh_field.db');
     final database = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: (db, version) async {
         final batch = db.batch();
         for (final statement in _schema) {
@@ -96,6 +96,11 @@ class ArrohDatabase {
           await _addColumnIfMissing(db, 'visits', 'escalated', "INTEGER NOT NULL DEFAULT 0");
           await _addColumnIfMissing(db, 'visits', 'payload_json', "TEXT");
         }
+        if (oldVersion < 5) {
+          for (final statement in _schemaV4) {
+            await db.execute(statement);
+          }
+        }
       },
     );
     _db = database;
@@ -114,7 +119,7 @@ class ArrohDatabase {
   static Future<ArrohDatabase> openForTesting() async {
     final database = await openDatabase(
       inMemoryDatabasePath,
-      version: 4,
+      version: 5,
       onCreate: (db, version) async {
         final batch = db.batch();
         for (final statement in _schema) {
@@ -124,6 +129,9 @@ class ArrohDatabase {
           batch.execute(statement);
         }
         for (final statement in _schemaV3) {
+          batch.execute(statement);
+        }
+        for (final statement in _schemaV4) {
           batch.execute(statement);
         }
         await batch.commit(noResult: true);
@@ -438,6 +446,18 @@ class ArrohDatabase {
     ''',
     'CREATE INDEX idx_local_visit_vitals_visit ON local_visit_vitals(visit_local_uuid)',
     'CREATE INDEX idx_local_visit_symptoms_visit ON local_visit_symptoms(visit_local_uuid)',
+  ];
+
+  static const List<String> _schemaV4 = [
+    '''
+    CREATE TABLE consultation_drafts (
+      local_uuid TEXT PRIMARY KEY,
+      patient_local_uuid TEXT,
+      session_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      synced_at TEXT
+    )
+    ''',
   ];
 }
 

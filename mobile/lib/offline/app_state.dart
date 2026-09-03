@@ -31,6 +31,7 @@ class AppState {
     required this.emergencyRepository,
     required this.visitRepository,
     required this.syncQueueRepository,
+    required this.consultationDraftRepository,
     required this.actor,
   });
 
@@ -46,6 +47,7 @@ class AppState {
   final EmergencyRepository emergencyRepository;
   final VisitRepository visitRepository;
   final SyncQueueRepository syncQueueRepository;
+  final ConsultationDraftRepository consultationDraftRepository;
 
   /// The currently signed-in field worker. Step 5 uses this value as
   /// ``actor_id`` and ``actor_role`` on every visit and follow-up write.
@@ -120,6 +122,7 @@ Future<AppState> buildAppState({
     emergencyRepository: EmergencyRepository(database),
     visitRepository: VisitRepository(database),
     syncQueueRepository: SyncQueueRepository(database),
+    consultationDraftRepository: ConsultationDraftRepository(database),
     actor: actor,
   );
 }
