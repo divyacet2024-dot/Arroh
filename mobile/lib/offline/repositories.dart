@@ -805,20 +805,497 @@ class OfflineEntityRepository {
 }
 
 class ConsultationDraftRepository {
+  /// Local persistence for in-progress doctor consultations.
+  ///
+  /// The mobile app is offline-first: a doctor can start a consultation,
+  /// record findings, attach prescriptions / diagnostics / discharge plans
+  /// and close the app. Every write is captured here and replayed through
+  /// the typed-sync envelope (see ``SyncEngine._dispatch``). The
+  /// ``local_uuid`` is the stable idempotency key — a retried sync never
+  /// creates a second consultation row on the server.
   ConsultationDraftRepository(this._db);
   final ArrohDatabase _db;
 
-  Future<void> save({required String localUuid, String? patientLocalUuid, required Map<String, dynamic> payload}) async {
-    final db = await _db.database;
+  String _newUuid(String prefix) =>
+      '$prefix-${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}';
+
+  Future<Database> get _conn => _db.database;
+
+  /// Persist a structured consultation payload. The first call enqueues a
+  /// ``create`` operation; subsequent calls enqueue ``update``. The row
+  /// is always replaced in the ``consultation_drafts`` table so the local
+  /// database mirrors the doctor's current state.
+  Future<void> saveConsultation({
+    required String localUuid,
+    String? patientLocalUuid,
+    required Map<String, dynamic> payload,
+  }) async {
+    final db = await _conn;
     final now = DateTime.now().toUtc().toIso8601String();
-    await db.insert('consultation_drafts', {'local_uuid': localUuid, 'patient_local_uuid': patientLocalUuid, 'session_json': jsonEncode(payload), 'updated_at': now}, conflictAlgorithm: ConflictAlgorithm.replace);
-    await SyncQueueRepository(_db).enqueue(entityType: 'consultation', entityLocalUuid: localUuid, operation: 'update', payload: payload);
+    final existing = await db.query('consultation_drafts',
+        columns: ['local_uuid'], where: 'local_uuid = ?', whereArgs: [localUuid], limit: 1);
+    final isCreate = existing.isEmpty;
+    await db.insert(
+      'consultation_drafts',
+      {
+        'local_uuid': localUuid,
+        'patient_local_uuid': patientLocalUuid,
+        'session_json': jsonEncode(payload),
+        'updated_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    final resolved = await _resolveForSync(payload, patientLocalUuid: patientLocalUuid, consultationLocalUuid: localUuid);
+    if (resolved == null) {
+      // The patient is not yet synced. The draft is safe locally and will
+      // be picked up the next time ``flushPendingDrafts`` runs after the
+      // patient sync completes.
+      return;
+    }
+    await SyncQueueRepository(_db).enqueue(
+      entityType: 'consultation',
+      entityLocalUuid: localUuid,
+      operation: isCreate ? 'create' : 'update',
+      payload: resolved,
+    );
   }
 
-  Future<Map<String, dynamic>?> find(String localUuid) async {
-    final db = await _db.database;
-    final rows = await db.query('consultation_drafts', where: 'local_uuid = ?', whereArgs: [localUuid], limit: 1);
+  /// Resolves a draft payload to a backend-ready payload. Returns null
+  /// when the patient has not been synced yet — the draft must remain
+  /// local until the patient is uploaded.
+  Future<Map<String, dynamic>?> _resolveForSync(
+    Map<String, dynamic> payload, {
+    required String? patientLocalUuid,
+    required String consultationLocalUuid,
+  }) async {
+    final out = Map<String, dynamic>.from(payload)..['local_uuid'] = consultationLocalUuid;
+    if (patientLocalUuid == null) return out;
+    final patient = await PatientRepository(_db).findById(patientLocalUuid);
+    final serverId = patient?.serverId;
+    if (serverId == null || serverId.isEmpty) {
+      return null;
+    }
+    out['patient_id'] = serverId;
+    return out;
+  }
+
+  /// Force a re-enqueue of every draft whose patient has just been
+  /// synced. The sync engine calls this after a successful patient
+  /// sync so dependent drafts are not stranded.
+  Future<int> flushPendingDrafts() async {
+    final drafts = await listDrafts();
+    int requeued = 0;
+    for (final draft in drafts) {
+      final localUuid = draft['local_uuid'] as String;
+      final patientLocalUuid = draft['patient_local_uuid'] as String?;
+      final session = await findConsultationDraft(localUuid);
+      if (session == null) continue;
+      final resolved = await _resolveForSync(
+        session,
+        patientLocalUuid: patientLocalUuid,
+        consultationLocalUuid: localUuid,
+      );
+      if (resolved == null) continue;
+      // Re-enqueue only if the existing queue row is already SYNCED or
+      // missing (e.g. patient sync came in after the draft save).
+      await SyncQueueRepository(_db).enqueue(
+        entityType: 'consultation',
+        entityLocalUuid: localUuid,
+        operation: 'update',
+        payload: resolved,
+      );
+      requeued += 1;
+    }
+    return requeued;
+  }
+
+  /// Enqueue a typed diagnostic request. ``consultation_local_uuid`` is
+  /// the mobile-local identifier; the backend resolves it on upload.
+  Future<String> enqueueDiagnosticRequest({
+    required String consultationLocalUuid,
+    required String investigationName,
+    String? indication,
+    required String requestedBy,
+  }) async {
+    final localUuid = _newUuid('diag');
+    final consultationId = await _resolveConsultationServerId(consultationLocalUuid);
+    if (consultationId == null) {
+      // The consultation is not yet synced. We still record the request
+      // in a pending-bucket so it can be re-enqueued after the
+      // consultation finishes syncing. See ``requeueDependents``.
+      await _recordPendingDependent(
+        entityType: 'diagnostic_request',
+        localUuid: localUuid,
+        consultationLocalUuid: consultationLocalUuid,
+        payload: {
+          'investigation_name': investigationName,
+          if (indication != null) 'indication': indication,
+          'requested_by': requestedBy,
+        },
+      );
+      return localUuid;
+    }
+    final payload = {
+      'consultation_id': consultationId,
+      'investigation_name': investigationName,
+      if (indication != null) 'indication': indication,
+      'requested_by': requestedBy,
+      'local_uuid': localUuid,
+    };
+    await SyncQueueRepository(_db).enqueue(
+      entityType: 'diagnostic_request',
+      entityLocalUuid: localUuid,
+      operation: 'create',
+      payload: payload,
+    );
+    return localUuid;
+  }
+
+  /// Enqueue a typed diagnostic result. ``investigation_local_uuid`` is
+  /// the mobile-local identifier of the diagnostic request this answers.
+  Future<String> enqueueDiagnosticResult({
+    required String investigationLocalUuid,
+    required String resultValue,
+    String? units,
+    String? referenceRange,
+    required String verifiedBy,
+  }) async {
+    final localUuid = _newUuid('diagr');
+    final investigationId = await _resolveInvestigationServerId(investigationLocalUuid);
+    if (investigationId == null) {
+      await _recordPendingDependent(
+        entityType: 'diagnostic_result',
+        localUuid: localUuid,
+        investigationLocalUuid: investigationLocalUuid,
+        payload: {
+          'result_value': resultValue,
+          if (units != null) 'units': units,
+          if (referenceRange != null) 'reference_range': referenceRange,
+          'verified_by': verifiedBy,
+        },
+      );
+      return localUuid;
+    }
+    final payload = {
+      'investigation_id': investigationId,
+      'result_value': resultValue,
+      if (units != null) 'units': units,
+      if (referenceRange != null) 'reference_range': referenceRange,
+      'performed_at': DateTime.now().toUtc().toIso8601String(),
+      if (verifiedBy.isNotEmpty) 'verified_by': verifiedBy,
+      'local_uuid': localUuid,
+    };
+    await SyncQueueRepository(_db).enqueue(
+      entityType: 'diagnostic_result',
+      entityLocalUuid: localUuid,
+      operation: 'create',
+      payload: payload,
+    );
+    return localUuid;
+  }
+
+  /// Enqueue a typed discharge plan. ``consultation_local_uuid`` is the
+  /// mobile-local consultation identifier; the server resolves it on
+  /// upload. The plan is the doctor-authored source of truth — no
+  /// autonomous rewrite happens after this call.
+  Future<String> enqueueDischargePlan({
+    required String consultationLocalUuid,
+    required String doctorId,
+    required String diagnosis,
+    required String treatmentInstructions,
+    required String emergencyReturnInstructions,
+    List<Map<String, dynamic>> medicationInstructions = const [],
+    String? activityDietInstructions,
+    List<String> warningSigns = const [],
+    bool followUpRequired = false,
+    DateTime? followUpDueAt,
+    String? referralInstructions,
+  }) async {
+    final localUuid = _newUuid('disch');
+    final consultationId = await _resolveConsultationServerId(consultationLocalUuid);
+    if (consultationId == null) {
+      await _recordPendingDependent(
+        entityType: 'discharge_plan',
+        localUuid: localUuid,
+        consultationLocalUuid: consultationLocalUuid,
+        payload: {
+          'doctor_id': doctorId,
+          'diagnosis': diagnosis,
+          'treatment_instructions': treatmentInstructions,
+          'medication_instructions': medicationInstructions,
+          if (activityDietInstructions != null) 'activity_diet_instructions': activityDietInstructions,
+          'warning_signs': warningSigns,
+          'emergency_return_instructions': emergencyReturnInstructions,
+          'follow_up_required': followUpRequired,
+          if (followUpRequired && followUpDueAt != null)
+            'follow_up_due_at': followUpDueAt.toUtc().toIso8601String(),
+          if (referralInstructions != null) 'referral_instructions': referralInstructions,
+        },
+      );
+      return localUuid;
+    }
+    final payload = {
+      'consultation_id': consultationId,
+      'doctor_id': doctorId,
+      'diagnosis': diagnosis,
+      'treatment_instructions': treatmentInstructions,
+      'medication_instructions': medicationInstructions,
+      if (activityDietInstructions != null) 'activity_diet_instructions': activityDietInstructions,
+      'warning_signs': warningSigns,
+      'emergency_return_instructions': emergencyReturnInstructions,
+      'follow_up_required': followUpRequired,
+      if (followUpRequired && followUpDueAt != null)
+        'follow_up_due_at': followUpDueAt.toUtc().toIso8601String(),
+      if (referralInstructions != null) 'referral_instructions': referralInstructions,
+      'local_uuid': localUuid,
+    };
+    await SyncQueueRepository(_db).enqueue(
+      entityType: 'discharge_plan',
+      entityLocalUuid: localUuid,
+      operation: 'create',
+      payload: payload,
+    );
+    return localUuid;
+  }
+
+  /// Enqueue a typed prescription linked to a consultation. Reuses the
+  /// existing ``CarePrescriptionCreateSchema`` contract — the form
+  /// contract below mirrors its required fields so a doctor never
+  /// fabricates values the backend cannot validate.
+  Future<String> enqueuePrescription({
+    required String patientServerId,
+    required String doctorId,
+    required String diagnosis,
+    required List<Map<String, dynamic>> medications,
+    String language = 'english',
+    int followUpInDays = 3,
+    String? consultationLocalUuid,
+  }) async {
+    final localUuid = _newUuid('rx');
+    final payload = {
+      'patient_id': patientServerId,
+      'doctor_id': doctorId,
+      'diagnosis': diagnosis,
+      'medications': medications,
+      'language': language,
+      'follow_up_in_days': followUpInDays,
+      if (consultationLocalUuid != null) 'consultation_local_uuid': consultationLocalUuid,
+    };
+    // The bulk-sync envelope carries a single record per call, so we use
+    // the existing ``prescription`` entity_type and route through the
+    // dedicated /prescriptions/create endpoint via a custom dispatch
+    // entry handled by the sync engine (see SyncEngine._syncPrescription).
+    await SyncQueueRepository(_db).enqueue(
+      entityType: 'prescription',
+      entityLocalUuid: localUuid,
+      operation: 'create',
+      payload: payload,
+    );
+    return localUuid;
+  }
+
+  Future<Map<String, dynamic>?> findConsultationDraft(String localUuid) async {
+    final db = await _conn;
+    final rows = await db.query('consultation_drafts',
+        where: 'local_uuid = ?', whereArgs: [localUuid], limit: 1);
     if (rows.isEmpty) return null;
     return (jsonDecode(rows.first['session_json']! as String) as Map).cast<String, dynamic>();
+  }
+
+  Future<List<Map<String, dynamic>>> listDrafts() async {
+    final db = await _conn;
+    final rows = await db.query('consultation_drafts', orderBy: 'updated_at DESC');
+    return rows.map((row) {
+      final session = (jsonDecode(row['session_json']! as String) as Map).cast<String, dynamic>();
+      return {
+        'local_uuid': row['local_uuid']! as String,
+        'patient_local_uuid': row['patient_local_uuid'] as String?,
+        'updated_at': row['updated_at']! as String,
+        'status': (session['status'] as String?) ?? 'STARTED',
+        'chief_complaint': session['chief_complaint'] as String?,
+        'patient_id': session['patient_id'] as String?,
+      };
+    }).toList();
+  }
+
+  Future<void> deleteDraft(String localUuid) async {
+    final db = await _conn;
+    await db.delete('consultation_drafts', where: 'local_uuid = ?', whereArgs: [localUuid]);
+  }
+
+  // ------------------------------------------------------------------
+  // Dependent-resolution helpers
+  // ------------------------------------------------------------------
+  // Diagnostic requests / discharge plans reference ``consultation_id``
+  // (server UUID). The mobile only knows the consultation by its
+  // ``local_uuid`` until the consultation row has been uploaded and the
+  // server id has been written back. Until then, the dependent payload
+  // is parked in ``consultation_dependents`` and re-enqueued by
+  // ``requeueDependents`` once the server id is available.
+  //
+  // Diagnostic results reference ``investigation_id``; the same
+  // mechanism applies through the consultation_dependents table.
+
+  Future<String?> _resolveConsultationServerId(String consultationLocalUuid) async {
+    final db = await _conn;
+    final rows = await db.query('sync_queue',
+        columns: ['server_id'],
+        where: "entity_type = 'consultation' AND entity_local_uuid = ? AND server_id IS NOT NULL",
+        whereArgs: [consultationLocalUuid],
+        limit: 1);
+    if (rows.isNotEmpty) {
+      return rows.first['server_id'] as String?;
+    }
+    // Fallback: some sync engine paths update a row's server_id on
+    // ``markSynced`` but store the result in a side table for
+    // consultation (the consultation_drafts table). Look in the draft
+    // session_json for any server_id the form already knows about.
+    final draftRows = await db.query('consultation_drafts',
+        where: 'local_uuid = ?', whereArgs: [consultationLocalUuid], limit: 1);
+    if (draftRows.isNotEmpty) {
+      final session = jsonDecode(draftRows.first['session_json']! as String) as Map;
+      final cached = session['server_consultation_id'];
+      if (cached is String && cached.isNotEmpty) return cached;
+    }
+    return null;
+  }
+
+  Future<String?> _resolveInvestigationServerId(String investigationLocalUuid) async {
+    final db = await _conn;
+    final rows = await db.query('clinical_server_ids',
+        columns: ['server_id'],
+        where: "entity_type = 'diagnostic_request' AND local_uuid = ?",
+        whereArgs: [investigationLocalUuid],
+        limit: 1);
+    if (rows.isNotEmpty) {
+      return rows.first['server_id'] as String?;
+    }
+    return null;
+  }
+
+  Future<void> _recordPendingDependent({
+    required String entityType,
+    required String localUuid,
+    String? consultationLocalUuid,
+    String? investigationLocalUuid,
+    required Map<String, dynamic> payload,
+  }) async {
+    final db = await _conn;
+    await db.insert(
+      'consultation_dependents',
+      {
+        'local_uuid': localUuid,
+        'entity_type': entityType,
+        'consultation_local_uuid': consultationLocalUuid,
+        'investigation_local_uuid': investigationLocalUuid,
+        'payload_json': jsonEncode(payload),
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Called by the sync engine after a consultation, diagnostic_request,
+  /// diagnostic_result or discharge_plan successfully uploads. Re-enqueues
+  /// any dependents that were waiting on the server id.
+  Future<int> requeueDependents({
+    String? consultationLocalUuid,
+    String? investigationLocalUuid,
+  }) async {
+    final db = await _conn;
+    final whereClauses = <String>[];
+    final args = <Object?>[];
+    if (consultationLocalUuid != null) {
+      whereClauses.add('consultation_local_uuid = ?');
+      args.add(consultationLocalUuid);
+    }
+    if (investigationLocalUuid != null) {
+      whereClauses.add('investigation_local_uuid = ?');
+      args.add(investigationLocalUuid);
+    }
+    if (whereClauses.isEmpty) return 0;
+    final rows = await db.query('consultation_dependents',
+        where: whereClauses.join(' OR '), whereArgs: args);
+    int requeued = 0;
+    for (final row in rows) {
+      final type = row['entity_type'] as String;
+      final localUuid = row['local_uuid'] as String;
+      final consLocal = row['consultation_local_uuid'] as String?;
+      final invLocal = row['investigation_local_uuid'] as String?;
+      final basePayload = (jsonDecode(row['payload_json']! as String) as Map).cast<String, dynamic>();
+      if (type == 'diagnostic_request' && consLocal != null) {
+        final serverConsultationId = await _resolveConsultationServerId(consLocal);
+        if (serverConsultationId == null) continue;
+        await SyncQueueRepository(_db).enqueue(
+          entityType: 'diagnostic_request',
+          entityLocalUuid: localUuid,
+          operation: 'create',
+          payload: {
+            ...basePayload,
+            'consultation_id': serverConsultationId,
+            'local_uuid': localUuid,
+          },
+        );
+        await db.delete('consultation_dependents', where: 'local_uuid = ?', whereArgs: [localUuid]);
+        requeued += 1;
+      } else if (type == 'diagnostic_result' && invLocal != null) {
+        final serverInvestigationId = await _resolveInvestigationServerId(invLocal);
+        if (serverInvestigationId == null) continue;
+        await SyncQueueRepository(_db).enqueue(
+          entityType: 'diagnostic_result',
+          entityLocalUuid: localUuid,
+          operation: 'create',
+          payload: {
+            ...basePayload,
+            'investigation_id': serverInvestigationId,
+            'performed_at': DateTime.now().toUtc().toIso8601String(),
+            'local_uuid': localUuid,
+          },
+        );
+        await db.delete('consultation_dependents', where: 'local_uuid = ?', whereArgs: [localUuid]);
+        requeued += 1;
+      } else if (type == 'discharge_plan' && consLocal != null) {
+        final serverConsultationId = await _resolveConsultationServerId(consLocal);
+        if (serverConsultationId == null) continue;
+        await SyncQueueRepository(_db).enqueue(
+          entityType: 'discharge_plan',
+          entityLocalUuid: localUuid,
+          operation: 'create',
+          payload: {
+            ...basePayload,
+            'consultation_id': serverConsultationId,
+            'local_uuid': localUuid,
+          },
+        );
+        await db.delete('consultation_dependents', where: 'local_uuid = ?', whereArgs: [localUuid]);
+        requeued += 1;
+      }
+    }
+    return requeued;
+  }
+
+  /// Persist a freshly-allocated server ``consultation_id`` on the
+  /// matching draft so future dependents can resolve it without waiting
+  /// for the next sync pass.
+  Future<void> rememberConsultationServerId({
+    required String consultationLocalUuid,
+    required String serverConsultationId,
+  }) async {
+    final db = await _conn;
+    final rows = await db.query('consultation_drafts',
+        where: 'local_uuid = ?', whereArgs: [consultationLocalUuid], limit: 1);
+    if (rows.isEmpty) return;
+    final session = (jsonDecode(rows.first['session_json']! as String) as Map).cast<String, dynamic>();
+    session['server_consultation_id'] = serverConsultationId;
+    await db.update(
+      'consultation_drafts',
+      {
+        'session_json': jsonEncode(session),
+        'synced_at': DateTime.now().toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'local_uuid = ?',
+      whereArgs: [consultationLocalUuid],
+    );
   }
 }

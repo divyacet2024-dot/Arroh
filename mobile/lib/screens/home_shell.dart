@@ -77,6 +77,7 @@ class _ActionList extends StatelessWidget {
       _Action(Icons.assignment_turned_in, 'Tasks', '/tasks', const Color(0xFF6A1B9A)),
       _Action(Icons.accessibility_new, 'ISL quick phrases', '/isl', const Color(0xFF8E24AA)),
       _Action(Icons.cloud_sync, 'Sync queue', '/sync', const Color(0xFFB26A00)),
+      _Action(Icons.medical_services_outlined, 'Doctor consultation', '/doctor', const Color(0xFF0B6BCB)),
       _Action(Icons.settings_outlined, 'Settings', '/settings', const Color(0xFF455A64)),
     ];
     return ListView.separated(

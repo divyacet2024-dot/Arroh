@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
+import { useAuth } from '../../lib/auth';
 import { ConnectivityBanner } from '../ConnectivityBanner';
 import { SyncStatusIndicator } from '../SyncStatusIndicator';
 import { useI18n, LANGUAGE_CODES, LANGUAGE_LABELS } from '../../i18n';
@@ -43,8 +44,8 @@ function BrandMark() {
         <HeartPulse className="h-5 w-5" aria-hidden="true" />
       </span>
       <div className="leading-tight">
-        <p className="font-semibold tracking-tight text-slate-900">ARROH</p>
-        <p className="text-xs text-slate-500">Rural Healthcare</p>
+        <p className="font-semibold tracking-tight text-slate-900">MEDORA</p>
+        <p className="text-xs text-slate-500">Smarter Care. Healthier Futures.</p>
       </div>
     </div>
   );
@@ -72,6 +73,7 @@ function LanguageSwitcher() {
 }
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+  const { user, logout } = useAuth();
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-slate-100 px-5 py-5">
@@ -99,6 +101,21 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
       <div className="space-y-3 border-t border-slate-100 px-5 py-4">
+        {user && (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-slate-800">{user.name}</p>
+              <p className="truncate text-xs text-slate-500">{user.email}</p>
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="shrink-0 rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+            >
+              Sign out
+            </button>
+          </div>
+        )}
         <ConnectivityBanner />
         <SyncStatusIndicator />
         <LanguageSwitcher />

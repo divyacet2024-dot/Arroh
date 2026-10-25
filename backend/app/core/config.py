@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    project_name: str = "ARROH - Rural Healthcare Platform"
+    project_name: str = "MEDORA - Rural Healthcare Platform"
     api_v1_prefix: str = "/api/v1"
     api_env: Literal["development", "test", "staging", "production"] = "development"
     # Local development defaults to a file-backed async SQLite database. Set

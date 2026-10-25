@@ -23,3 +23,7 @@ class VoiceParseResponseSchema(BaseModel):
     transcript: str
     extracted_clinical_data: dict[str, Any]
     triage_assessment: TriageResponseSchema
+    # Patient-friendly spoken reply in the patient's language (for TTS playback).
+    patient_reply: str
+    # Canonical language code the reply was composed in (e.g. "hi", "kn").
+    reply_language: str

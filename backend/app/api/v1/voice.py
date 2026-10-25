@@ -8,6 +8,7 @@ from app.db.models.patient import Patient, TriageStatus
 from app.db.models.triage import TriageLog
 from app.db.session import get_db_session
 from app.schemas.voice import VoiceParseRequestSchema, VoiceParseResponseSchema
+from app.services.patient_reply_service import build_patient_reply, supported_reply_language
 from app.services.triage_service import assess_triage
 from app.services.voice_service import parse_voice_transcript
 
@@ -39,4 +40,6 @@ async def parse_and_triage_voice(payload: VoiceParseRequestSchema, db: AsyncSess
         transcript=payload.transcript,
         extracted_clinical_data=extracted,
         triage_assessment=assessment,
+        patient_reply=build_patient_reply(extracted, assessment, payload.language),
+        reply_language=supported_reply_language(payload.language),
     )

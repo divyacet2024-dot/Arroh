@@ -148,6 +148,10 @@ export interface VoiceParseResponse {
   transcript: string;
   extracted_clinical_data: ExtractedClinicalData;
   triage_assessment: TriageResult;
+  /** Patient-friendly spoken reply in the patient's language (for TTS). */
+  patient_reply: string;
+  /** Canonical language code the reply was composed in (e.g. "hi", "kn"). */
+  reply_language: string;
 }
 
 /* ---------------------------- Accessibility ----------------------------- */
@@ -334,4 +338,36 @@ export interface TimelineEvent {
 export interface PatientTimelineResponse {
   patient_id: string;
   events: TimelineEvent[];
+}
+
+/* --------------------------- Authentication ----------------------------- */
+
+/** A signed-in account returned by the backend (never contains the password hash). */
+export interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+  role?: 'doctor' | 'asha' | 'admin';
+  created_at: string;
+}
+
+/** Successful register/login response: the user plus a bearer token. */
+export interface AuthResponse {
+  user: AuthUser;
+  token: string;
+  token_type: string;
+}
+
+/** Payload to create a new clinician account. */
+export interface RegisterInput {
+  name: string;
+  email: string;
+  password: string;
+  role?: 'doctor' | 'asha' | 'admin';
+}
+
+/** Credential payload to sign in an existing account. */
+export interface LoginInput {
+  email: string;
+  password: string;
 }

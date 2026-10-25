@@ -9,15 +9,15 @@ import re
 from typing import Any
 
 _SYMPTOM_MAP: dict[str, tuple[str, ...]] = {
-    "chest pain": ("chest pain", "nenju vali", "seene mein dard", "chati mein dard", "ಮೆದೆ ನೋವು", "ಎದೆ ನೋವು", "மார்பு வலி", "ఛాతీ నొప్పి"),
-    "shortness of breath": ("shortness of breath", "breathlessness", "difficulty breathing", "saans ki takleef", "ಉಸಿರಾಟದ ತೊಂದರೆ", "மூச்சுத்திணறல்", "శ్వాస ఇబ్బంది"),
-    "high fever": ("high fever", "fever", "bukhar", "jwara", "ಜ್ವರ", "ಜ್ವరం", "காய்ச்சல்", "జ్వరం"),
-    "abnormal bleeding": ("abnormal bleeding", "heavy bleeding", "raktasrava", "ರಕ್ತಸ್ರಾವ", "அதிக இரத்தப்போக்கு", "అధిక రక్తస్రావం"),
-    "snakebite": ("snakebite", "snake bite", "saamp kaat", "ಹಾವು ಕಚ್ಚಿದೆ", "பாம்பு கடி", "పాము కాటు"),
-    "pregnancy": ("pregnant", "pregnancy", "expecting", "antepartum", "in labour", "in labor"),
-    "pre-eclampsia": ("pre-eclampsia", "preeclampsia", "pre eclampsia", "eclampsia", "pregnancy hypertension"),
-    "antepartum hemorrhage": ("antepartum hemorrhage", "antepartum haemorrhage", "vaginal bleeding in pregnancy", "bleeding during pregnancy", "placenta previa", "placental abruption"),
-    "severe anemia": ("severe anemia", "severe anaemia", "pallor", "extreme fatigue", "severe weakness", "severe tiredness"),
+    "chest pain": ("chest pain", "nenju vali", "seene mein dard", "chati mein dard", "सीने में दर्द", "छाती में दर्द", "ಮೆದೆ ನೋವು", "ಎದೆ ನೋವು", "மார்பு வலி", "ఛాతీ నొప్పి"),
+    "shortness of breath": ("shortness of breath", "breathlessness", "difficulty breathing", "saans ki takleef", "सांस लेने में तकलीफ", "सांस की तकलीफ", "दम घुटना", "ಉಸಿರಾಟದ ತೊಂದರೆ", "மூச்சுத்திணறல்", "శ్వాస ఇబ్బంది"),
+    "high fever": ("high fever", "fever", "bukhar", "jwara", "तेज बुखार", "बुखार", "ಜ್ವರ", "ಜ್ವరం", "காய்ச்சல்", "జ్వరం"),
+    "abnormal bleeding": ("abnormal bleeding", "heavy bleeding", "raktasrava", "असामान्य रक्तस्राव", "भारी रक्तस्राव", "खून बहना", "ರಕ್ತಸ್ರಾವ", "அதிக இரத்தப்போக்கு", "అధిక రక్తస్రావం"),
+    "snakebite": ("snakebite", "snake bite", "saamp kaat", "सांप का काटना", "सांप ने काटा", "ಹಾವು ಕಚ್ಚಿದೆ", "பாம்பு கடி", "పాము కాటు"),
+    "pregnancy": ("pregnant", "pregnancy", "expecting", "antepartum", "in labour", "in labor", "गर्भवती", "गर्भावस्था"),
+    "pre-eclampsia": ("pre-eclampsia", "preeclampsia", "pre eclampsia", "eclampsia", "pregnancy hypertension", "प्री-एक्लेम्पसिया"),
+    "antepartum hemorrhage": ("antepartum hemorrhage", "antepartum haemorrhage", "vaginal bleeding in pregnancy", "bleeding during pregnancy", "placenta previa", "placental abruption", "गर्भावस्था में रक्तस्राव", "प्रसव पूर्व रक्तस्राव"),
+    "severe anemia": ("severe anemia", "severe anaemia", "pallor", "extreme fatigue", "severe weakness", "severe tiredness", "गंभीर खून की कमी"),
 }
 
 _VITAL_PATTERNS: dict[str, re.Pattern[str]] = {

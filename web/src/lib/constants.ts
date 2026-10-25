@@ -16,13 +16,10 @@ export const DEFAULT_DOCTOR_ID = 'DOC-KAR-881';
 export const DEFAULT_WORKER_ID = 'ASHA-DEMO-01';
 
 /** Languages accepted by the voice / emergency endpoints. */
-export const SUPPORTED_LANGUAGES: { code: string; label: string }[] = [
-  { code: 'en', label: 'English' },
-  { code: 'kn', label: 'Kannada' },
-  { code: 'hi', label: 'Hindi' },
-  { code: 'ta', label: 'Tamil' },
-  { code: 'te', label: 'Telugu' },
-];
+export const SUPPORTED_LANGUAGES = LANGUAGE_CONFIGS.map(({ code, displayName }) => ({
+  code: code.split('-')[0],
+  label: displayName,
+}));
 
 /** Common vitals available for triage input, with friendly labels + units. */
 export const VITAL_FIELDS: { key: string; label: string; unit?: string }[] = [
@@ -51,3 +48,4 @@ export const SYMPTOM_PRESETS: { label: string; value: string }[] = [
 
 /** How often the frontend re-checks backend health (ms). */
 export const HEALTH_POLL_INTERVAL_MS = 15000;
+import { LANGUAGE_CONFIGS } from './languageConfig';

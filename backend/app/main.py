@@ -11,6 +11,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 
 from app.api.v1.accessibility import router as accessibility_router
+from app.api.v1.auth import router as auth_router
+from app.api.v1.patient_auth import router as patient_auth_router
 from app.api.v1.case_taking import router as case_taking_router
 from app.api.v1.patients import router as patients_router
 from app.api.v1.inventory import router as inventory_router
@@ -31,7 +33,9 @@ from app.db.models import case_taking as _case_taking_models  # noqa: F401
 from app.db.models import referral_transition as _referral_transition_models  # noqa: F401
 from app.db.models import follow_up as _follow_up_models  # noqa: F401
 from app.db.models import consultation as _consultation_models  # noqa: F401
+from app.db.models import user as _user_models  # noqa: F401
 from app.db.models import visit as _visit_models  # noqa: F401
+from app.db.models import otp as _otp_models  # noqa: F401
 from app.db.session import Base, engine
 
 logger = logging.getLogger(__name__)
@@ -39,7 +43,7 @@ settings = get_settings()
 
 
 app = FastAPI(
-    title="ARROH - Rural Healthcare Platform",
+    title="MEDORA - Rural Healthcare Platform",
     version="1.0.0",
     description="ABDM-aligned, FHIR-ready backend for accessible rural and remote healthcare.",
 )
@@ -108,6 +112,11 @@ async def create_development_schema() -> None:
             prescription_columns = (await connection.execute(text("PRAGMA table_info(care_prescriptions)"))).mappings().all()
             if prescription_columns and "consultation_id" not in {column["name"] for column in prescription_columns}:
                 await connection.execute(text("ALTER TABLE care_prescriptions ADD COLUMN consultation_id CHAR(32)"))
+            # Add role column to users table (new in AI-first redesign).
+            user_columns = (await connection.execute(text("PRAGMA table_info(users)"))).mappings().all()
+            if user_columns and "role" not in {column["name"] for column in user_columns}:
+                await connection.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'doctor'"))
+            # otp_records table is created by create_all above; no extra migration needed.
 
 
 @app.on_event("shutdown")
@@ -151,6 +160,8 @@ async def unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 app.include_router(accessibility_router, prefix=settings.api_v1_prefix)
+app.include_router(auth_router, prefix=settings.api_v1_prefix)
+app.include_router(patient_auth_router, prefix=settings.api_v1_prefix)
 app.include_router(case_taking_router, prefix=settings.api_v1_prefix)
 app.include_router(patients_router, prefix=settings.api_v1_prefix)
 app.include_router(sync_router, prefix=settings.api_v1_prefix)

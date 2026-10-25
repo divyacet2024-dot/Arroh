@@ -19,6 +19,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:sqflite/sqflite.dart' show ConflictAlgorithm;
 
 import 'database.dart';
 import 'models.dart';
@@ -133,6 +134,7 @@ class SyncEngine {
           if (result != null) {
             await queue.markSynced(item.id);
             await _markEntitySynced(item, serverId: result);
+            await _requeueClinicalDependentsAfter(item);
             succeeded += 1;
           } else {
             await queue.markFailed(item.id, 'Backend rejected the record');
@@ -206,6 +208,8 @@ class SyncEngine {
       case 'diagnostic_result':
       case 'discharge_plan':
         return _syncViaBulk(item.entityType, payload, item.entityLocalUuid);
+      case 'prescription':
+        return _syncPrescription(payload, item.entityLocalUuid);
       default:
         return null;
     }
@@ -220,6 +224,9 @@ class SyncEngine {
     final localUuid = payload['local_client_uuid'] as String?;
     if (localUuid != null) {
       await repo.markSynced(localUuid, serverId: serverId, syncedAt: DateTime.now().toUtc().toIso8601String());
+      // Patient just synced — kick any dependent consultation drafts
+      // that were waiting on the server id.
+      await ConsultationDraftRepository(database).flushPendingDrafts();
     }
     if (existing != null) return serverId;
     return serverId;
@@ -261,6 +268,17 @@ class SyncEngine {
     return _syncViaBulk('task', payload, localUuid);
   }
 
+  /// Re-point the existing typed sync envelope at the dedicated
+  /// /prescriptions/create REST endpoint instead of /sync/bulk so the
+  /// payload honours the multilingual-prescription contract
+  /// (``CarePrescriptionCreateSchema``) without inventing a parallel
+  /// transport.
+  Future<String?> _syncPrescription(Map<String, dynamic> payload, String localUuid) async {
+    final response = await _post('/prescriptions/create', payload);
+    final serverId = response['prescription_id']?.toString();
+    return serverId ?? response['id']?.toString() ?? 'ack';
+  }
+
   Future<String?> _syncViaBulk(String entityType, Map<String, dynamic> payload, String localUuid) async {
     final record = {
       'entity_type': entityType,
@@ -284,13 +302,69 @@ class SyncEngine {
     final syncedAt = DateTime.now().toUtc().toIso8601String();
     final db = await database.database;
     final table = _tableForEntity(item.entityType);
-    if (table == null) return;
-    await db.update(
-      table,
-      {'synced_at': syncedAt, 'server_id': serverId},
-      where: 'local_uuid = ?',
-      whereArgs: [item.entityLocalUuid],
-    );
+    if (table != null) {
+      await db.update(
+        table,
+        {'synced_at': syncedAt, 'server_id': serverId},
+        where: 'local_uuid = ?',
+        whereArgs: [item.entityLocalUuid],
+      );
+    }
+    // Clinical entities (consultation / diagnostic_request /
+    // diagnostic_result / discharge_plan) live outside the legacy
+    // patient/triage tables. We cache the server id in the draft row
+    // (or a side table) so subsequent dependent writes can resolve it.
+    if (_isClinicalEntity(item.entityType)) {
+      await _persistClinicalServerId(
+        entityType: item.entityType,
+        localUuid: item.entityLocalUuid,
+        serverId: serverId,
+      );
+    }
+  }
+
+  bool _isClinicalEntity(String entityType) => const {
+        'consultation',
+        'diagnostic_request',
+        'diagnostic_result',
+        'discharge_plan',
+      }.contains(entityType);
+
+  Future<void> _persistClinicalServerId({
+    required String entityType,
+    required String localUuid,
+    required String serverId,
+  }) async {
+    final db = await database.database;
+    if (entityType == 'consultation') {
+      await ConsultationDraftRepository(database).rememberConsultationServerId(
+        consultationLocalUuid: localUuid,
+        serverConsultationId: serverId,
+      );
+    } else {
+      // diagnostic_request / diagnostic_result / discharge_plan
+      // Server id cache is held in a tiny side table so dependents can
+      // resolve the parent server id without re-uploading the parent.
+      await db.insert(
+        'clinical_server_ids',
+        {
+          'entity_type': entityType,
+          'local_uuid': localUuid,
+          'server_id': serverId,
+          'synced_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+
+  Future<void> _requeueClinicalDependentsAfter(SyncQueueItem item) async {
+    final draftRepo = ConsultationDraftRepository(database);
+    if (item.entityType == 'consultation') {
+      await draftRepo.requeueDependents(consultationLocalUuid: item.entityLocalUuid);
+    } else if (item.entityType == 'diagnostic_request') {
+      await draftRepo.requeueDependents(investigationLocalUuid: item.entityLocalUuid);
+    }
   }
 
   String? _tableForEntity(String entityType) => switch (entityType) {

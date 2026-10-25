@@ -25,14 +25,21 @@ import 'package:flutter/material.dart';
 
 import 'offline/app_state.dart';
 import 'offline/connectivity_monitor.dart';
+import 'offline/models.dart';
 import 'offline/sync_engine.dart';
 import 'screens/asha_home_screen.dart';
 import 'screens/case_taking_screen.dart';
+import 'screens/consultation_form_screen.dart';
+import 'screens/consultation_summary_screen.dart';
+import 'screens/diagnostic_screen.dart';
+import 'screens/discharge_plan_screen.dart';
+import 'screens/doctor_home_screen.dart';
 import 'screens/follow_up_screen.dart';
 import 'screens/isl_screen.dart';
 import 'screens/low_literacy_screen.dart';
 import 'screens/patient_register_screen.dart';
 import 'screens/patients_screen.dart';
+import 'screens/prescription_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/sync_screen.dart';
 import 'screens/triage_screen.dart';
@@ -139,6 +146,73 @@ class _ArrohFieldAppState extends State<ArrohFieldApp> {
           return MaterialPageRoute(
             settings: settings,
             builder: (_) => VisitFormScreen(state: widget.state, visitLocalUuid: visitLocalUuid),
+          );
+        }
+        if (name == '/consultation/new') {
+          final patient = settings.arguments;
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) => ConsultationFormScreen(
+              state: widget.state,
+              preselectedPatient: patient is LocalPatient ? patient : null,
+            ),
+          );
+        }
+        if (name == '/consultation') {
+          final localUuid = settings.arguments;
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) => ConsultationFormScreen(
+              state: widget.state,
+              consultationLocalUuid: localUuid is String ? localUuid : null,
+            ),
+          );
+        }
+        if (name == '/consultation/summary') {
+          final localUuid = settings.arguments;
+          if (localUuid is String) {
+            return MaterialPageRoute(
+              settings: settings,
+              builder: (_) => ConsultationSummaryScreen(state: widget.state, consultationLocalUuid: localUuid),
+            );
+          }
+        }
+        if (name == '/consultation/prescription') {
+          final args = settings.arguments as Map?;
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) => PrescriptionScreen(
+              state: widget.state,
+              consultationLocalUuid: (args?['consultationLocalUuid'] as String?) ?? '',
+              patientLocalUuid: args?['patientLocalUuid'] as String?,
+            ),
+          );
+        }
+        if (name == '/consultation/diagnostics') {
+          final args = settings.arguments as Map?;
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) => DiagnosticRequestScreen(
+              state: widget.state,
+              consultationLocalUuid: (args?['consultationLocalUuid'] as String?) ?? '',
+            ),
+          );
+        }
+        if (name == '/consultation/discharge') {
+          final args = settings.arguments as Map?;
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) => DischargePlanScreen(
+              state: widget.state,
+              consultationLocalUuid: (args?['consultationLocalUuid'] as String?) ?? '',
+              patientLocalUuid: args?['patientLocalUuid'] as String?,
+            ),
+          );
+        }
+        if (name == '/doctor') {
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) => DoctorHomeScreen(state: widget.state),
           );
         }
         return null;

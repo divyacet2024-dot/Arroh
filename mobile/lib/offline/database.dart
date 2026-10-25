@@ -458,6 +458,27 @@ class ArrohDatabase {
       synced_at TEXT
     )
     ''',
+    '''
+    CREATE TABLE consultation_dependents (
+      local_uuid TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL,
+      consultation_local_uuid TEXT,
+      investigation_local_uuid TEXT,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+    ''',
+    '''
+    CREATE TABLE clinical_server_ids (
+      entity_type TEXT NOT NULL,
+      local_uuid TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      synced_at TEXT NOT NULL,
+      PRIMARY KEY (entity_type, local_uuid)
+    )
+    ''',
+    'CREATE INDEX idx_consultation_dependents_consultation ON consultation_dependents(consultation_local_uuid)',
+    'CREATE INDEX idx_consultation_dependents_investigation ON consultation_dependents(investigation_local_uuid)',
   ];
 }
 

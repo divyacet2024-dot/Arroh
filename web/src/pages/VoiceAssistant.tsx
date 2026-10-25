@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Mic, MicOff, Send, RotateCcw, ShieldAlert, AlertCircle } from 'lucide-react';
+import { Mic, MicOff, Send, RotateCcw, ShieldAlert, AlertCircle, Volume2, VolumeX } from 'lucide-react';
 import { voiceTriage } from '../services/voice';
 import { PageHeader } from '../components/PageHeader';
 import { Card } from '../components/ui/Card';
@@ -12,6 +12,7 @@ import { ErrorState } from '../components/ErrorState';
 import { Badge } from '../components/ui/Badge';
 import { formatVital, humanize } from '../lib/format';
 import { SUPPORTED_LANGUAGES } from '../lib/constants';
+import { getLanguageConfig } from '../lib/languageConfig';
 import type { VoiceParseResponse } from '../types';
 import type { TriageStatus } from '../types';
 
@@ -21,6 +22,7 @@ interface SpeechRecognitionLike {
   interimResults: boolean;
   start: () => void;
   stop: () => void;
+  abort: () => void;
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
   onerror: ((event: { error: string; message?: string }) => void) | null;
   onend: (() => void) | null;
@@ -35,6 +37,22 @@ function getSpeechRecognition(): SpeechRecognitionLike | null {
   return Ctor ? new Ctor() : null;
 }
 
+/** Only choose a browser voice whose language matches the requested language. */
+function pickVoice(voices: SpeechSynthesisVoice[], code: string): SpeechSynthesisVoice | null {
+  const config = getLanguageConfig(code);
+  if (!config) return null;
+  const expectedLanguage = config.code.split('-')[0].toLowerCase();
+  return (
+    voices.find((voice) => voice.lang.replace('_', '-').toLowerCase().split('-')[0] === expectedLanguage) ??
+    null
+  );
+}
+
+/** Human-readable label for a language code (falls back to the code itself). */
+function languageLabel(code: string): string {
+  return SUPPORTED_LANGUAGES.find((l) => l.code === code)?.label ?? code;
+}
+
 export function VoiceAssistant() {
   const [searchParams] = useSearchParams();
   const patientId = searchParams.get('patient_id') ?? '';
@@ -47,20 +65,87 @@ export function VoiceAssistant() {
   const [listening, setListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
+  const [speaking, setSpeaking] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => {
     setSpeechSupported(getSpeechRecognition() !== null);
     return () => {
-      try {
-        recognitionRef.current?.stop();
-      } catch {
-        // ignore: nothing to stop
+      if (recognitionRef.current) {
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.abort();
       }
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     };
   }, []);
 
+  // Load browser voices so we can pick the right language for the spoken reply.
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return;
+    const load = () => setVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.addEventListener('voiceschanged', load);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', load);
+  }, []);
+
+  function speakReply(text: string, code: string) {
+    if (!text) return;
+    if (!('speechSynthesis' in window)) {
+      setSpeechError('Speech playback is not available in this browser. Read the reply shown below.');
+      return;
+    }
+    const config = getLanguageConfig(code);
+    if (!config) {
+      setSpeechError('This reply language is not configured for speech playback. Read the reply shown below.');
+      return;
+    }
+    const synth = window.speechSynthesis;
+    const voice = pickVoice(voices.length ? voices : synth.getVoices(), code);
+    if (!voice) {
+      setSpeaking(false);
+      setSpeechError(`A ${config.displayName} speech voice is not currently available. Voice resources may still be loading; retry or read the reply shown below.`);
+      return;
+    }
+    synth.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = config.ttsLocale;
+    utterance.voice = voice;
+    utterance.rate = config.ttsRate;
+    utterance.pitch = 1;
+    utterance.onstart = () => {
+      if (utteranceRef.current === utterance) setSpeaking(true);
+    };
+    utterance.onend = () => {
+      if (utteranceRef.current !== utterance) return;
+      utteranceRef.current = null;
+      setSpeaking(false);
+    };
+    utterance.onerror = (event) => {
+      if (utteranceRef.current !== utterance) return;
+      utteranceRef.current = null;
+      setSpeaking(false);
+      if (event.error !== 'interrupted' && event.error !== 'canceled') {
+        setSpeechError('Speech playback failed. Read the reply shown below or try again.');
+      }
+    };
+    utteranceRef.current = utterance;
+    setSpeechError(null);
+    setSpeaking(true);
+    synth.speak(utterance);
+  }
+
+  function stopSpeaking() {
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    utteranceRef.current = null;
+    setSpeaking(false);
+  }
+
   function startListening() {
+    if (listening || recognitionRef.current) return;
     setSpeechError(null);
     const recognition = getSpeechRecognition();
     if (!recognition) {
@@ -70,15 +155,27 @@ export function VoiceAssistant() {
     }
     recognition.continuous = false;
     recognition.interimResults = false;
-    recognition.lang = language;
+    const config = getLanguageConfig(language);
+    if (!config) {
+      setSpeechError('This language is not configured for speech recognition. Select a supported language.');
+      return;
+    }
+    recognition.lang = config.speechRecognitionLocale;
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    utteranceRef.current = null;
+    setSpeaking(false);
     recognition.onresult = (event) => {
       const first = event.results[0]?.[0];
       if (first?.transcript) {
         const next = first.transcript.trim();
         if (next) setTranscript((current) => (current ? `${current} ${next}` : next));
+        else setSpeechError('No speech was detected. Try again or type the transcript below.');
+      } else {
+        setSpeechError('No speech was detected. Try again or type the transcript below.');
       }
     };
     recognition.onerror = (event) => {
+      if (recognitionRef.current !== recognition) return;
       const code = event.error;
       setSpeechError(
         code === 'not-allowed' || code === 'service-not-allowed'
@@ -89,12 +186,17 @@ export function VoiceAssistant() {
       );
       setListening(false);
     };
-    recognition.onend = () => setListening(false);
+    recognition.onend = () => {
+      if (recognitionRef.current !== recognition) return;
+      recognitionRef.current = null;
+      setListening(false);
+    };
+    recognitionRef.current = recognition;
     try {
       recognition.start();
-      recognitionRef.current = recognition;
       setListening(true);
     } catch (cause) {
+      recognitionRef.current = null;
       setSpeechError(
         cause instanceof Error
           ? cause.message
@@ -108,7 +210,10 @@ export function VoiceAssistant() {
     try {
       recognitionRef.current?.stop();
     } catch {
-      // ignore: nothing to stop
+      setSpeechError('The microphone session could not be stopped. Close and reopen voice input.');
+      setListening(false);
+      recognitionRef.current = null;
+      return;
     }
     setListening(false);
   }
@@ -116,7 +221,7 @@ export function VoiceAssistant() {
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError(null);
-    if (!transcript.trim()) return;
+    if (!transcript.trim() || loading) return;
     setLoading(true);
     try {
       const parsed = await voiceTriage({
@@ -125,6 +230,7 @@ export function VoiceAssistant() {
         abha_id: patientId || undefined,
       });
       setResult(parsed);
+      speakReply(parsed.patient_reply, parsed.reply_language);
     } catch (err) {
       setError(err);
     } finally {
@@ -152,6 +258,7 @@ export function VoiceAssistant() {
                 onClick={() => {
                   setTranscript('');
                   setResult(null);
+                  stopSpeaking();
                 }}
               >
                 <RotateCcw className="h-4 w-4" aria-hidden="true" /> Reset
@@ -220,7 +327,12 @@ export function VoiceAssistant() {
               <Select
                 label="Language"
                 value={language}
-                onChange={(event) => setLanguage(event.target.value)}
+                onChange={(event) => {
+                  stopListening();
+                  stopSpeaking();
+                  setSpeechError(null);
+                  setLanguage(event.target.value);
+                }}
                 options={SUPPORTED_LANGUAGES.map((language) => ({
                   value: language.code,
                   label: language.label,
@@ -249,14 +361,63 @@ export function VoiceAssistant() {
 
       {Boolean(error) && <ErrorState error={error} onRetry={() => setError(null)} title="Voice triage failed" />}
 
-      {result && <VoiceResult result={result} />}
+      {result && (
+        <VoiceResult
+          result={result}
+          speaking={speaking}
+          onSpeak={() => speakReply(result.patient_reply, result.reply_language)}
+          onStop={stopSpeaking}
+        />
+      )}
     </div>
   );
 }
 
-function VoiceResult({ result }: { result: VoiceParseResponse }) {
+function VoiceResult({
+  result,
+  speaking,
+  onSpeak,
+  onStop,
+}: {
+  result: VoiceParseResponse;
+  speaking: boolean;
+  onSpeak: () => void;
+  onStop: () => void;
+}) {
   const { extracted_clinical_data: clinical, triage_assessment: assessment } = result;
+  const hasSpeech = 'speechSynthesis' in window;
   return (
+    <div className="space-y-6">
+      <Card
+        title="Assistant reply"
+        subtitle={`Reply in ${languageLabel(result.reply_language)}${hasSpeech ? '. Tap to hear it again.' : ''}`}
+        actions={
+          hasSpeech ? (
+            speaking ? (
+              <Button variant="ghost" size="sm" type="button" onClick={onStop}>
+                <VolumeX className="h-4 w-4" aria-hidden="true" /> Stop
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" type="button" onClick={onSpeak}>
+                <Volume2 className="h-4 w-4" aria-hidden="true" /> Speak
+              </Button>
+            )
+          ) : null
+        }
+      >
+        <div className="flex items-start gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-600 text-white">
+            <Volume2 className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <p className="pt-1 text-base leading-relaxed text-slate-800">
+            {result.patient_reply}
+          </p>
+        </div>
+        <p className="mt-3 text-xs text-slate-400">
+          Reply language: {languageLabel(result.reply_language)}
+        </p>
+      </Card>
+
     <div className="grid gap-6 lg:grid-cols-2">
       <div className="space-y-4">
         <Card title="Parsed transcript">
@@ -339,6 +500,7 @@ function VoiceResult({ result }: { result: VoiceParseResponse }) {
           </Card>
         )}
       </div>
+    </div>
     </div>
   );
 }

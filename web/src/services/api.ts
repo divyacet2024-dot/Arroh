@@ -1,5 +1,5 @@
 /**
- * Centralized ARROH REST client.
+ * Centralized MEDORA REST client.
  *
  * The base URL is read from `VITE_API_BASE_URL` (via `.env`) and NEVER hardcoded
  * in components. Every service module calls `request<T>()` here so error
@@ -37,7 +37,7 @@ function mapTransportError(error: AxiosError): ApiError {
   }
   if (!error.response) {
     return new ApiError(
-      'Unable to reach the backend. Confirm the ARROH server is running and this app has network access.',
+      'Unable to reach the backend. Confirm the MEDORA server is running and this app has network access.',
     );
   }
   return mapHttpError(error.response.status, error.response.data);
