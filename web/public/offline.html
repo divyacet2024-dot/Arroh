@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="kn">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#1f7773" />
+  <title>MEDORA — Offline</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: 'Noto Sans Kannada', 'Noto Sans', system-ui, sans-serif;
+      background: #f5f7f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      color: #1e293b;
+    }
+    .card {
+      background: #fff;
+      border-radius: 20px;
+      padding: 2rem 1.75rem;
+      max-width: 380px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 4px 24px rgba(0,0,0,.08);
+    }
+    .icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      display: block;
+    }
+    .brand {
+      font-size: 1.2rem;
+      font-weight: 800;
+      letter-spacing: .1em;
+      color: #1f7773;
+      margin-bottom: .25rem;
+    }
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 0 0 .75rem;
+    }
+    p {
+      font-size: .9rem;
+      color: #64748b;
+      line-height: 1.6;
+      margin: 0 0 1.25rem;
+    }
+    .kn { font-size: .85rem; color: #94a3b8; }
+    button {
+      width: 100%;
+      padding: .875rem;
+      border-radius: 14px;
+      background: #1f7773;
+      color: #fff;
+      font-size: .95rem;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+      margin-top: .5rem;
+    }
+    button:hover { background: #1b5f5c; }
+    .emergency {
+      margin-top: 1rem;
+      font-size: .75rem;
+      color: #94a3b8;
+    }
+    a { color: #1f7773; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="icon">📶</span>
+    <p class="brand">MEDORA</p>
+    <h1>Internet connection unavailable</h1>
+    <p>
+      MEDORA needs an internet connection for this page.
+      Your previously saved records are safe and will sync when you reconnect.
+    </p>
+    <p class="kn">
+      Internet ಸಂಪರ್ಕ ಇಲ್ಲ. ನಿಮ್ಮ ಮಾಹಿತಿ ಸುರಕ್ಷಿತವಾಗಿ save ಆಗಿದೆ.
+    </p>
+    <button onclick="window.location.reload()">Try again / ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ</button>
+    <p class="emergency">
+      Emergency? Call 108 or go to your nearest hospital.
+      <br>ತುರ್ತು? 108 ಕರೆ ಮಾಡಿ.
+    </p>
+  </div>
+</body>
+</html>

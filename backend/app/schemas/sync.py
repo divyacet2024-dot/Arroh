@@ -91,7 +91,7 @@ class SyncPayloadSchema(BaseModel):
     worker_id: str = Field(min_length=1, max_length=128)
     phc_id: str = Field(min_length=1, max_length=128)
     sync_timestamp: datetime
-    records: list[SyncRecordSchema | TypedSyncRecordSchema] = Field(min_length=1, max_length=500)
+    records: list[SyncRecordSchema | TypedSyncRecordSchema] = Field(min_length=0, max_length=500)
 
 
 class ResolvedConflictSchema(BaseModel):

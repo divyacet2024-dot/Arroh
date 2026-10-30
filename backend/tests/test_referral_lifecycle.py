@@ -4,6 +4,19 @@ from datetime import datetime
 from uuid import uuid4
 from uuid import UUID
 
+import uuid as _uuid_module
+
+
+def _staff_headers(client):
+    """Register a fresh staff account and return Authorization headers."""
+    email = f"staff-rl-{_uuid_module.uuid4()}@test.local"
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={"name": "Test Staff", "email": email, "password": "TestPass123!"},
+    )
+    assert resp.status_code == 201, resp.text
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
+
 
 def _create_referral(client):
     patient = client.post(
@@ -80,7 +93,8 @@ def test_complete_referral_lifecycle_history_timeline_and_idempotency(client):
     assert history[0]["reason"] == "Clinical handoff"
     assert history[0]["notes"] == "Recorded by worker"
 
-    timeline = client.get(f"/api/v1/patients/{referral["patient_id"]}/timeline")
+    timeline = client.get(f"/api/v1/patients/{referral["patient_id"]}/timeline",
+                           headers=_staff_headers(client))
     assert timeline.status_code == 200
     events = timeline.json()["events"]
     referral_events = [event for event in events if event["event_type"].startswith("REFERRAL_")]

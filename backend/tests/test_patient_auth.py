@@ -169,3 +169,52 @@ def test_voice_reply_preserves_language_and_unicode(
     body = response.json()
     assert body["reply_language"] == expected_language
     assert expected_text in body["patient_reply"]
+
+
+def test_patient_prescriptions_are_isolated_between_accounts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable_test_otp_delivery(monkeypatch)
+
+    # Patient A
+    a_otp = client.post("/api/v1/patient-auth/request-otp", json={"phone_number": "9876543290"})
+    assert a_otp.status_code == 200
+    a_token = client.post(
+        "/api/v1/patient-auth/verify-otp",
+        json={"phone_number": "9876543290", "otp_code": a_otp.json()["dev_otp"]},
+    ).json()["token"]
+    a_id = client.get("/api/v1/patient-auth/me", headers={"Authorization": f"Bearer {a_token}"}).json()["id"]
+
+    # Patient B
+    b_otp = client.post("/api/v1/patient-auth/request-otp", json={"phone_number": "9876543291"})
+    assert b_otp.status_code == 200
+    b_token = client.post(
+        "/api/v1/patient-auth/verify-otp",
+        json={"phone_number": "9876543291", "otp_code": b_otp.json()["dev_otp"]},
+    ).json()["token"]
+
+    # Create a prescription for Patient A via the staff endpoint.
+    rx = client.post(
+        "/api/v1/prescriptions/create",
+        json={
+            "patient_id": a_id,
+            "doctor_id": "DR-ISO",
+            "diagnosis": "Isolation test",
+            "medications": [
+                {"name": "Paracetamol", "dosage": "500mg", "frequency": "ONCE_DAILY", "duration_days": 3, "visual_identifier": "White tablet"}
+            ],
+            "language": "english",
+            "follow_up_in_days": 3,
+        },
+    )
+    assert rx.status_code == 201
+
+    # Patient A sees their own prescription.
+    a_list = client.get("/api/v1/patient-auth/prescriptions", headers={"Authorization": f"Bearer {a_token}"})
+    assert a_list.status_code == 200
+    assert len(a_list.json()) == 1
+
+    # Patient B cannot see Patient A's prescription.
+    b_list = client.get("/api/v1/patient-auth/prescriptions", headers={"Authorization": f"Bearer {b_token}"})
+    assert b_list.status_code == 200
+    assert b_list.json() == []

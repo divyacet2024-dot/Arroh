@@ -1,0 +1,19 @@
+warning: in the working copy of 'backend/app/api/v1/auth.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/app/api/v1/patient_auth.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/app/main.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/i18n/index.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/index.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/lib/useArrohVoice.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/pages/PatientHome.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/pages/PatientLogin.tsx', LF will be replaced by CRLF the next time Git touches it
+ backend/app/api/v1/auth.py         |   19 [32m+[m[31m-[m
+ backend/app/api/v1/patient_auth.py |   51 [32m+[m[31m-[m
+ backend/app/main.py                |    1 [32m+[m
+ backend/tests/test_auth.py         |   40 [32m+[m
+ backend/tests/test_patient_auth.py |   15 [32m+[m
+ web/src/i18n/index.tsx             |   49 [32m+[m[31m-[m
+ web/src/index.css                  | 1493 [32m+++++++++++++++++++++[m[31m---------------[m
+ web/src/lib/useArrohVoice.ts       |  342 [32m++++++[m[31m---[m
+ web/src/pages/PatientHome.tsx      |  614 [32m+++++++++[m[31m------[m
+ web/src/pages/PatientLogin.tsx     |  650 [32m++++++++++[m[31m------[m
+ 10 files changed, 2047 insertions(+), 1227 deletions(-)

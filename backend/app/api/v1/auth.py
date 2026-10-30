@@ -2,7 +2,8 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,14 +15,13 @@ from app.services.auth_service import create_access_token, hash_password, parse_
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# Documented as a string so the OpenAPI schema reflects the actual header name.
-_authorization_header = Header(default=None, alias="Authorization")
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def _read_bearer_token(authorization: str | None) -> str:
-    if not authorization or not authorization.lower().startswith("bearer "):
+def _read_bearer_token(credentials: HTTPAuthorizationCredentials | None) -> str:
+    if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid bearer token")
-    return authorization.split(" ", 1)[1].strip()
+    return credentials.credentials
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED, summary="Register a new user")
@@ -56,10 +56,13 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db_session
 
 
 @router.get("/me", response_model=AuthUserRead, summary="Validate the current session")
-async def me(authorization: str | None = _authorization_header, db: AsyncSession = Depends(get_db_session)) -> User:
+async def me(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: AsyncSession = Depends(get_db_session),
+) -> User:
     """Return the authenticated user for a valid bearer token."""
 
-    token = _read_bearer_token(authorization)
+    token = _read_bearer_token(credentials)
     user_id: uuid.UUID | None = parse_user_id(token)
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")

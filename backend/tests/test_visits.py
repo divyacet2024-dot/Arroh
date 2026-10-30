@@ -26,6 +26,17 @@ def _worker_headers(actor_id: str = "asha-001", actor_role: str = "ASHA", phc_id
     return {"X-Worker-Id": actor_id, "X-Worker-Role": actor_role, "X-PHC-Id": phc_id}
 
 
+def _staff_headers(client):
+    email = f"visit-staff-{uuid.uuid4()}@example.test"
+    registered = client.post(
+        "/api/v1/auth/register",
+        json={"name": "Visit Staff", "email": email, "password": "test-password-123"},
+    )
+    assert registered.status_code == 201, registered.text
+    token = registered.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_create_visit_and_get(client):
     patient = _create_patient(client, "A")
     response = client.post(
@@ -124,7 +135,7 @@ def test_complete_visit_referral_required_creates_referral(client):
     body = response.json()
     assert body["outcome"] == "REFERRAL_REQUIRED"
     assert body["referral_id"]
-    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline").json()
+    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline", headers=_staff_headers(client)).json()
     referral_events = [e for e in timeline["events"] if e["event_type"] in {"REFERRAL_CREATED", "REFERRAL_PATIENT_INFORMED"}]
     assert referral_events, timeline["events"]
 
@@ -387,7 +398,7 @@ def test_timeline_includes_visit_events(client):
         json={"outcome": "COMPLETED", "findings": "OK"},
         headers=_worker_headers(),
     )
-    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline").json()
+    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline", headers=_staff_headers(client)).json()
     event_types = {event["event_type"] for event in timeline["events"]}
     assert "VISIT_STARTED" in event_types
     assert "VISIT_COMPLETED" in event_types

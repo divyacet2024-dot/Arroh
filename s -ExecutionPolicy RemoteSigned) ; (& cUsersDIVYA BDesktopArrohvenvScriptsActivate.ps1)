@@ -1,0 +1,146 @@
+warning: in the working copy of 'web/src/lib/useArrohVoice.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/pages/PatientHome.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'web/src/pages/PatientLogin.tsx', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/web/src/lib/useArrohVoice.ts b/web/src/lib/useArrohVoice.ts[m
+[1mindex 866db7a..7c73d72 100644[m
+[1m--- a/web/src/lib/useArrohVoice.ts[m
+[1m+++ b/web/src/lib/useArrohVoice.ts[m
+[36m@@ -1,55 +1,35 @@[m
+ /**[m
+[31m- * useArrohVoice — single source of truth for ARROH voice I/O.[m
+[32m+[m[32m * useArrohVoice — single source of truth for MEDORA voice I/O.[m
+  *[m
+[31m- * ROOT CAUSE ANALYSIS (why TTS was silent):[m
+[31m- *   1. PatientHome called window.speechSynthesis.speak() directly with no[m
+[31m- *      voice enumeration — browsers often return an empty voices list on the[m
+[31m- *      first call and require waiting for the `voiceschanged` event.[m
+[31m- *   2. No autoplay-policy guard — Chrome on Android silently drops[m
+[31m- *      speechSynthesis.speak() until the user has interacted with the page.[m
+[31m- *   3. Duplicate speak() calls were not cancelled before the new utterance.[m
+[31m- *   4. The SPEAKING avatar state was set then immediately cleared on a[m
+[31m- *      setTimeout rather than waiting for the real `onend` event.[m
+[31m- *   5. VoiceButton did not cancel TTS when the user started speaking,[m
+[31m- *      causing overlap.[m
+[31m- *[m
+[31m- * This hook fixes all five issues in one place so no component needs to[m
+[31m- * think about SpeechSynthesis or SpeechRecognition internals.[m
+[31m- *[m
+[31m- * API:[m
+[31m- *   const voice = useArrohVoice({ language, onTranscript })[m
+[31m- *[m
+[31m- *   voice.state         → AvatarState[m
+[31m- *   voice.transcript    → last heard text (cleared on next listen)[m
+[31m- *   voice.speak(text)   → cancel any current speech, then speak text[m
+[31m- *   voice.listen()      → start STT (cancels TTS first)[m
+[31m- *   voice.stopListening()[m
+[31m- *   voice.cancel()      → cancel everything[m
+[31m- *   voice.ttsSupported  → boolean[m
+[31m- *   voice.sttSupported  → boolean[m
+[32m+[m[32m * Key fixes in this version:[m
+[32m+[m[32m *   1. pickVoice() uses voiceNameHints from languageConfig for better matching.[m
+[32m+[m[32m *   2. doSpeak() queues the text if voices haven't loaded yet (voiceschanged).[m
+[32m+[m[32m *   3. Exposes ttsVoiceAvailable (bool) and ttsVoiceName (string) so components[m
+[32m+[m[32m *      can show an honest "Kannada voice not available" message instead of[m
+[32m+[m[32m *      silently failing or faking speech.[m
+[32m+[m[32m *   4. Never fakes SPEAKING state: only set from SpeechSynthesisUtterance.onstart.[m
+[32m+[m[32m *   5. interactedRef ensures markInteracted() flushes pendingSpeakRef synchronously.[m
+[32m+[m[32m *   6. Duplicate recognition sessions prevented by ref guard.[m
+[32m+[m[32m *   7. All errors are human-readable, never raw API error strings.[m
+  */[m
+ [m
+ import { useCallback, useEffect, useRef, useState } from 'react';[m
+ import type { AvatarState } from '../components/AIAvatar';[m
+ import { getLanguageConfig } from './languageConfig';[m
+ [m
+[31m-// ── Browser API detection ────────────────────────────────────────────────────[m
+[32m+[m[32m// ── Browser API types (cross-browser) ────────────────────────────────────────[m
+ [m
+ interface RecognitionAlternative {[m
+   transcript: string;[m
+   confidence: number;[m
+ }[m
+[31m-[m
+ interface RecognitionResult extends ArrayLike<RecognitionAlternative> {}[m
+[31m-[m
+ interface RecognitionEvent {[m
+   results: ArrayLike<RecognitionResult>;[m
+ }[m
+[31m-[m
+ interface RecognitionErrorEvent {[m
+   error: string;[m
+ }[m
+[31m-[m
+ interface SpeechRecognitionLike {[m
+   lang: string;[m
+   continuous: boolean;[m
+[36m@@ -64,36 +44,60 @@[m [minterface SpeechRecognitionLike {[m
+   onerror: ((event: RecognitionErrorEvent) => void) | null;[m
+   onend: (() => void) | null;[m
+ }[m
+[31m-[m
+ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;[m
+ [m
+ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {[m
+   if (typeof window === 'undefined') return null;[m
+[31m-  const browser = window as Window & {[m
+[32m+[m[32m  const w = window as Window & {[m
+     SpeechRecognition?: SpeechRecognitionConstructor;[m
+     webkitSpeechRecognition?: SpeechRecognitionConstructor;[m
+   };[m
+[31m-  return browser.SpeechRecognition ?? browser.webkitSpeechRecognition ?? null;[m
+[32m+[m[32m  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;[m
+ }[m
+ [m
+ const SpeechRecognitionCtor = getSpeechRecognitionConstructor();[m
+[31m-[m
+[31m-const ttsAvailable =[m
+[31m-  typeof window !== 'undefined' && 'speechSynthesis' in window;[m
+[31m-[m
+[31m-// ── Voice preference map ─────────────────────────────────────────────────────[m
+[32m+[m[32mconst ttsAvailable = typeof window !== 'undefined' && 'speechSynthesis' in window;[m
+[32m+[m
+[32m+[m[32m// ── Voice selection using voiceNameHints ──────────────────────────────────────[m
+[32m+[m[32m//[m
+[32m+[m[32m// Strategy (each step falls back to the next):[m
+[32m+[m[32m//   1. Exact lang match ("kn-IN" === voice.lang normalised)[m
+[32m+[m[32m//   2. Language prefix match ("kn" === voice.lang prefix)[m
+[32m+[m[32m//   3. Any voiceNameHint appears in voice.name (case-insensitive)[m
+[32m+[m[32m//   4. null — no suitable voice found[m
+[32m+[m[32m//[m
+[32m+[m[32m// IMPORTANT: never returns a voice for a different language family.[m
+[32m+[m[32m// If no match is found, we return null and doSpeak() surfaces an honest error.[m
+ [m
+ function pickVoice(lang: string): SpeechSynthesisVoice | null {[m
+   if (!ttsAvailable) return null;[m
+   const config = getLanguageConfig(lang);[m
+   if (!config) return null;[m
+[31m-  const prefix = config.code.split('-')[0].toLowerCase();[m
+[31m-  return window.speechSynthesis.getVoices().find([m
+[31m-    (voice) => voice.lang.replace('_', '-').toLowerCase().split('-')[0] === prefix,[m
+[31m-  ) ?? null;[m
+[32m+[m[32m  const voices = window.speechSynthesis.getVoices();[m
+[32m+[m[32m  if (!voices.length) return null;[m
+[32m+[m
+[32m+[m[32m  const normalise = (s: string) => s.replace('_', '-').toLowerCase();[m
+[32m+[m[32m  const configCode  = normalise(config.code);[m
+[32m+[m[32m  const configPfx   = configCode.split('-')[0];[m
+[32m+[m
+[32m+[m[32m  // 1. Exact lang match[m
+[32m+[m[32m  const exact = voices.find((v) => normalise(v.lang) === configCode);[m
+[32m+[m[32m  if (exact) return exact;[m
+[32m+[m
+[32m+[m[32m  // 2. Lang prefix match (e.g. voice.lang = "kn" matches config "kn-IN")[m
+[32m+[m[32m  const prefix = voices.find((v) => normalise(v.lang).split('-')[0] === configPfx);[m
+[32m+[m[32m  if (prefix) return prefix;[m
+[32m+[m
+[32m+[m[32m  // 3. Name hint substring match[m
+[32m+[m[32m  for (const hint of config.voiceNameHints) {[m
+[32m+[m[32m    const byName = voices.find((v) => v.name.toLowerCase().includes(hint.toLowerCase()));[m
+[32m+[m[32m    if (byName) return byName;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  return null;[m
+ }[m
+ [m
+[31m-// ── Hook ─────────────────────────────────────────────────────────────────────[m
+[32m+[m[32m// ── Hook ───────────────────

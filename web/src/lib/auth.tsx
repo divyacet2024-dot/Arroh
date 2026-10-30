@@ -43,6 +43,7 @@ interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   isAuthenticated: boolean;
+  isSessionReady: boolean;
   role: string | null;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string, role?: RegisterInput['role']) => Promise<void>;
@@ -53,10 +54,14 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session>(() => readSession());
+  const [isSessionReady, setIsSessionReady] = useState(() => !readSession().token);
 
   useEffect(() => {
     const initial = readSession();
-    if (!initial.token) return;
+    if (!initial.token) {
+      setIsSessionReady(true);
+      return;
+    }
     let cancelled = false;
     getCurrentUser(initial.token)
       .then((user) => {
@@ -71,6 +76,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSession({ user: null, token: null });
           clearSession();
         }
+      })
+      .finally(() => {
+        if (!cancelled) setIsSessionReady(true);
       });
     return () => { cancelled = true; };
   }, []);
@@ -106,12 +114,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user: session.user,
       token: session.token,
       isAuthenticated: session.user !== null && session.token !== null,
+      isSessionReady,
       role: session.user?.role ?? null,
       login,
       register,
       logout,
     }),
-    [session, login, register, logout],
+    [session, isSessionReady, login, register, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -125,7 +134,14 @@ export function useAuth(): AuthContextValue {
 
 /** Guard: redirects unauthenticated staff to /login. */
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isSessionReady } = useAuth();
+  if (!isSessionReady) {
+    return (
+      <div role="status" aria-label="Checking staff session" className="grid min-h-dvh place-items-center bg-slate-50">
+        <span className="sr-only">Checking staff session…</span>
+      </div>
+    );
+  }
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }

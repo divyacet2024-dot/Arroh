@@ -86,14 +86,25 @@ export interface OfflineSpeechService {
 /** Local text-to-speech. `speak` synthesises only from on-device voices. */
 export interface OfflineTTSService {
   readonly available: boolean;
-  /** List the voices that genuinely have on-device voice data. Async because the native engine must be queried. */
-  getVoices(): Promise<{ language: string; label: string }[]>;
+  /** List voices with their actual device installation and network requirements. */
+  getVoices(): Promise<{
+    language: string;
+    label: string;
+    available: boolean;
+    requiresNetworkConnection: boolean;
+  }[]>;
   /**
-   * Truthfully report whether a language can be spoken offline on this device.
-   * Returns `available: false` (never throws) when no on-device voice exists.
+   * Truthfully report whether an offline voice exists for this language.
+   * Network-only voices are reported separately and are never presented as offline.
    */
-  checkLanguage(language: string): Promise<{ available: boolean; label: string }>;
-  speak(text: string, options: { language: string; rate?: number }): Promise<void>;
+  checkLanguage(language: string): Promise<{
+    available: boolean;
+    label: string;
+    requiresNetworkConnection: boolean;
+    voiceName: string | null;
+  }>;
+  /** Resolves after playback finishes; onStart fires only after Android confirms playback started. */
+  speak(text: string, options: { language: string; rate?: number; onStart?: () => void }): Promise<void>;
   stop(): Promise<void>;
 }
 

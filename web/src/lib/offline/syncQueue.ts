@@ -34,6 +34,16 @@ interface PersistedOutbox {
   lastSyncedAt?: string;
 }
 
+type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
+
+function currentStorage(): StorageLike | undefined {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 /* ----------------------- validation / persistence ----------------------- */
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -66,9 +76,9 @@ function isQueueItem(value: unknown): value is SyncQueueItem {
   );
 }
 
-function loadOutbox(): PersistedOutbox {
+function loadOutbox(storage: StorageLike | undefined = currentStorage()): PersistedOutbox {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = storage?.getItem(STORAGE_KEY);
     if (!raw) return { v: 2, items: [] };
     const parsed: unknown = JSON.parse(raw);
     if (isRecord(parsed) && parsed.v === 2 && Array.isArray(parsed.items)) {
@@ -84,8 +94,8 @@ function loadOutbox(): PersistedOutbox {
     // Malformed data: preserve the raw blob for recovery rather than silently
     // discarding potentially unrecoverable patient records.
     try {
-      const corrupted = localStorage.getItem(STORAGE_KEY);
-      if (corrupted) localStorage.setItem(CORRUPT_BACKUP_KEY, corrupted);
+      const corrupted = storage?.getItem(STORAGE_KEY);
+      if (corrupted) storage?.setItem(CORRUPT_BACKUP_KEY, corrupted);
     } catch {
       // storage may be unavailable — nothing more we can do
     }
@@ -93,9 +103,9 @@ function loadOutbox(): PersistedOutbox {
   }
 }
 
-function persistOutbox(outbox: PersistedOutbox) {
+function persistOutbox(outbox: PersistedOutbox, storage: StorageLike | undefined = currentStorage()) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(outbox));
+    storage?.setItem(STORAGE_KEY, JSON.stringify(outbox));
   } catch {
     // Quota exceeded / storage disabled — keep the in-memory copy so the UI
     // still reflects pending work for this session.
@@ -104,7 +114,8 @@ function persistOutbox(outbox: PersistedOutbox) {
 
 /* --------------------------- store + subscribe -------------------------- */
 
-let outbox: PersistedOutbox = loadOutbox();
+let storageOwner = currentStorage();
+let outbox: PersistedOutbox = loadOutbox(storageOwner);
 const listeners = new Set<() => void>();
 
 type SubscribeListener = () => void;
@@ -115,9 +126,23 @@ export function subscribeSnapshot(listener: SubscribeListener): () => void {
 }
 
 function commit(next: PersistedOutbox) {
+  ensureCurrentStorage();
   outbox = next;
-  persistOutbox(outbox);
+  persistOutbox(outbox, storageOwner);
   listeners.forEach((listener) => listener());
+}
+
+/**
+ * Browser storage is stable in production. Re-reading only when the storage
+ * object changes keeps tests and SSR storage shims isolated instead of leaking
+ * a stale in-memory queue into a new storage context.
+ */
+function ensureCurrentStorage() {
+  const storage = currentStorage();
+  if (storage !== storageOwner) {
+    storageOwner = storage;
+    outbox = loadOutbox(storageOwner);
+  }
 }
 
 function newUuid(): string {
@@ -134,6 +159,7 @@ function newUuid(): string {
  * than duplicated (prevents duplicate submission).
  */
 export function enqueue(payload: SyncRecord): SyncQueueItem {
+  ensureCurrentStorage();
   const uuid = payload.local_client_uuid || newUuid();
   const record: SyncRecord = { ...payload, local_client_uuid: uuid };
   const existing = outbox.items.find((item) => item.local_client_uuid === uuid);
@@ -167,6 +193,7 @@ export function enqueue(payload: SyncRecord): SyncQueueItem {
 
 /** Items that still need syncing (pending/failed/syncing — anything unacked). */
 export function getPending(): SyncQueueItem[] {
+  ensureCurrentStorage();
   return outbox.items.filter((item) => item.status !== 'synced');
 }
 
@@ -175,10 +202,12 @@ export function getPendingCount(): number {
 }
 
 export function getAllItems(): SyncQueueItem[] {
+  ensureCurrentStorage();
   return outbox.items;
 }
 
 export function markSynced(localClientUuid: string) {
+  ensureCurrentStorage();
   commit({
     ...outbox,
     items: outbox.items.map((item) =>
@@ -190,6 +219,7 @@ export function markSynced(localClientUuid: string) {
 }
 
 export function markFailed(localClientUuid: string, message: string) {
+  ensureCurrentStorage();
   commit({
     ...outbox,
     items: outbox.items.map((item) =>
@@ -207,11 +237,13 @@ export function markFailed(localClientUuid: string, message: string) {
 }
 
 export function recordLastSyncedAt(when: string) {
+  ensureCurrentStorage();
   commit({ ...outbox, lastSyncedAt: when });
 }
 
 /** Remove only records the backend has acknowledged. Never discards pending work. */
 export function clearSynced() {
+  ensureCurrentStorage();
   commit({ ...outbox, items: outbox.items.filter((item) => item.status !== 'synced') });
 }
 
@@ -220,6 +252,7 @@ export function clearSynced() {
  * a hard safety guard — pending/failed items can never be discarded here.
  */
 export function discardSyncedItem(localClientUuid: string) {
+  ensureCurrentStorage();
   commit({
     ...outbox,
     items: outbox.items.filter(
@@ -229,6 +262,7 @@ export function discardSyncedItem(localClientUuid: string) {
 }
 
 export function getLastSyncedAt(): string | undefined {
+  ensureCurrentStorage();
   return outbox.lastSyncedAt;
 }
 

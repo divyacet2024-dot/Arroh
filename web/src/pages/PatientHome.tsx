@@ -1,34 +1,62 @@
 /**
- * PatientHome — AI-first patient experience.
+ * PatientHome — MEDORA patient experience.
  *
- * Architecture:
- *   - ArrohHumanAvatar is the primary visual, always visible
- *   - patientAgent dispatches voice/text input to real backend tools
- *   - SymptomPicker appears when agent triggers SHOW_SYMPTOM_PICKER
- *   - Confirmation gate (ಹೌದು / ಬದಲಾಯಿಸಿ) before any sensitive action
- *   - All messages show in a conversational transcript beneath the avatar
- *   - Offline status shown clearly — no false network claims
- *   - Secondary action tiles remain accessible
+ * Layout (mobile-first, single column):
+ *   1. Sticky header: MEDORA brand + patient name + sign-out
+ *   2. Offline / voice-unavailable banners (contextual, not permanent)
+ *   3. Avatar hero: ArrohHumanAvatar + live state label + tap-to-greet
+ *   4. Conversation transcript (last 6 messages, scrollable)
+ *   5. Confirmation gate when agent requires it
+ *   6. SymptomPicker when agent requests it
+ *   7. Input row: mic + text + send (always at bottom, keyboard-aware)
+ *   8. Quick-action grid for common tasks
+ *   9. Medical disclaimer
+ *
+ * Voice single source of truth:
+ *   - voice.speak(text) is called ONCE per agent response from applyResponse()
+ *   - The SAME text is shown in the transcript — no dual strings
+ *   - SPEAKING state on avatar driven by utt.onstart / utt.onend in useArrohVoice
+ *   - Tap-to-hear replay button allows re-speaking the last response
+ *
+ * Duplicate-speak prevention:
+ *   - applyResponse() calls voice.speak() exactly once
+ *   - handleTranscript() and submitText() both go through applyResponse()
+ *   - greetOnFirstTouch() sets hasGreeted guard so greeting fires once
  */
 
 import {
-  useState, useCallback, useRef, useEffect,
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
   type KeyboardEvent,
 } from 'react';
 import {
-  Heart, Calendar, FileText, ArrowUpRight,
-  Pill, Siren, WifiOff, Mic, MicOff,
-  CheckCircle, XCircle, Send,
+  Heart,
+  Calendar,
+  FileText,
+  ArrowUpRight,
+  Pill,
+  Siren,
+  WifiOff,
+  Mic,
+  MicOff,
+  Send,
+  CheckCircle,
+  XCircle,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { useI18n } from '../i18n';
-import { usePatientAuth } from '../lib/patientAuth';
-import { useConnectivity } from '../lib/offline/connectivity';
-import { ArrohHumanAvatar } from '../components/ArrohHumanAvatar';
+import { useNavigate }         from 'react-router-dom';
+import { useI18n }             from '../i18n';
+import { usePatientAuth }      from '../lib/patientAuth';
+import { useConnectivity }     from '../lib/offline/connectivity';
+import { PatientLanguageSelect } from '../components/PatientLanguageSelect';
+import { ArrohHumanAvatar }    from '../components/ArrohHumanAvatar';
 import { SymptomPicker, type SelectedSymptom } from '../components/SymptomPicker';
-import { useArrohVoice } from '../lib/useArrohVoice';
+import { useArrohVoice }       from '../lib/useArrohVoice';
 import {
-  dispatch as agentDispatch,
+  dispatch      as agentDispatch,
   createContext as createAgentContext,
   addTappedSymptoms,
   confirmPending,
@@ -37,103 +65,134 @@ import {
   type AgentAction,
   type AgentResponse,
 } from '../lib/patientAgent';
-import { ARROH_GREETING } from '../lib/languageConfig';
-import { cn } from '../lib/cn';
+import { ARROH_GREETING }      from '../lib/languageConfig';
+import { cn }                  from '../lib/cn';
 
-// ── Message types ─────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 interface Message {
+  id: number;
   role: 'ai' | 'user';
   text: string;
   action?: AgentAction;
   data?: Record<string, unknown>;
 }
 
-// ── Main PatientHome ──────────────────────────────────────────────────────────
+let _msgId = 0;
+const nextId = () => ++_msgId;
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function PatientHome() {
-  const { t, language } = useI18n();
-  const { user, logout, token } = usePatientAuth();
-  const { online } = useConnectivity();
-  const navigate = useNavigate();
+  const { t, language }             = useI18n();
+  const { user, logout, token }     = usePatientAuth();
+  const { online }                  = useConnectivity();
+  const navigate                    = useNavigate();
 
   const isKn = language.startsWith('kn');
   const isHi = language.startsWith('hi');
-  const firstName = user?.name?.trim().split(' ')[0] || null;
+  const firstName = user?.name?.trim().split(' ')[0] ?? null;
 
-  // ── Agent context — persistent for the session ──────────────────────────
+  // ── Agent context ─────────────────────────────────────────────────────────
   const agentCtxRef = useRef<AgentContext>(
     createAgentContext(user?.id ?? null, token, language),
   );
-  // Keep language + token in sync when they change
   useEffect(() => {
-    agentCtxRef.current.language      = language;
-    agentCtxRef.current.patientToken  = token;
-    agentCtxRef.current.patientId     = user?.id ?? null;
+    agentCtxRef.current.language     = language;
+    agentCtxRef.current.patientToken = token;
+    agentCtxRef.current.patientId    = user?.id ?? null;
   }, [language, token, user?.id]);
 
-  // ── Conversation state ──────────────────────────────────────────────────
+  // ── Conversation state ────────────────────────────────────────────────────
   const greetingText = ARROH_GREETING[language] ?? ARROH_GREETING['en-IN'];
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages]           = useState<Message[]>([]);
+  const [activeAction, setActiveAction]   = useState<AgentAction>('NONE');
+  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
+  const [isProcessing, setIsProcessing]   = useState(false);
+  const [textInput, setTextInput]         = useState('');
+  const [selectedSymptoms, setSelectedSymptoms] = useState<SelectedSymptom[]>([]);
+  // Track last AI response text for the replay button
+  const lastAiTextRef = useRef<string>(greetingText);
+
   const displayedMessages: Message[] = messages.length
     ? messages
-    : [{ role: 'ai', text: greetingText }];
-  const [activeAction, setActiveAction] = useState<AgentAction>('NONE');
-  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [textInput, setTextInput]       = useState('');
-  const [selectedSymptoms, setSelectedSymptoms] = useState<SelectedSymptom[]>([]);
+    : [{ id: 0, role: 'ai', text: greetingText }];
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef  = useRef<HTMLDivElement>(null);
+  const inputRef        = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
   }, []);
 
-  // ── Apply agent response ─────────────────────────────────────────────────
-  const applyResponse = useCallback((resp: AgentResponse, userText?: string) => {
-    if (userText) {
-      setMessages((m) => [...m, { role: 'user', text: userText }]);
-    }
-    setMessages((m) => [...m, { role: 'ai', text: resp.text, action: resp.action, data: resp.data }]);
-    setActiveAction(resp.action ?? 'NONE');
-    setAwaitingConfirm(resp.requiresConfirmation ?? false);
-    voice.speak(resp.text);
-    scrollToBottom();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // ── Single applyResponse — ONLY place voice.speak() is called ────────────
+  const applyResponse = useCallback(
+    (resp: AgentResponse, userText?: string) => {
+      if (userText) {
+        setMessages((m) => [...m, { id: nextId(), role: 'user', text: userText }]);
+      }
+      setMessages((m) => [
+        ...m,
+        { id: nextId(), role: 'ai', text: resp.text, action: resp.action, data: resp.data },
+      ]);
+      setActiveAction(resp.action ?? 'NONE');
+      setAwaitingConfirm(resp.requiresConfirmation ?? false);
+      lastAiTextRef.current = resp.text;
+      // Single call to voice.speak — same text as displayed
+      voice.speak(resp.text);
+      scrollToBottom();
+    },
+    // voice is stable across renders (same hook instance)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scrollToBottom],
+  );
 
-  // ── Voice hook ───────────────────────────────────────────────────────────
-  const handleTranscript = useCallback(async (text: string) => {
-    setIsProcessing(true);
-    try {
-      const resp = await agentDispatch(text, agentCtxRef.current);
-      applyResponse(resp, text);
-      // Sync selected symptoms from agent context
-      setSelectedSymptoms(agentCtxRef.current.symptoms.map((s) => ({
-        symptom: s.symptom,
-        source: s.source,
-      })));
-    } catch {
-      const errMsg = isKn ? 'ತೊಂದರೆ ಆಗಿದೆ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.' : 'Something went wrong. Please try again.';
-      setMessages((m) => [...m, { role: 'ai', text: errMsg }]);
-      voice.speak(errMsg);
-    } finally {
-      setIsProcessing(false);
-    }
-  }, [isKn, applyResponse]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ── Voice hook ────────────────────────────────────────────────────────────
+  const handleTranscript = useCallback(
+    async (text: string) => {
+      setIsProcessing(true);
+      try {
+        const resp = await agentDispatch(text, agentCtxRef.current);
+        applyResponse(resp, text);
+        setSelectedSymptoms(
+          agentCtxRef.current.symptoms.map((s) => ({ symptom: s.symptom, source: s.source })),
+        );
+      } catch {
+        const errMsg = isKn
+          ? 'ಕ್ಷಮಿಸಿ, ತೊಂದರೆ ಆಗಿದೆ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.'
+          : 'Something went wrong. Please try again.';
+        setMessages((m) => [...m, { id: nextId(), role: 'ai', text: errMsg }]);
+        voice.speak(errMsg);
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isKn, applyResponse],
+  );
 
   const voice = useArrohVoice({ language, onTranscript: handleTranscript });
 
-  // Speak greeting on first user interaction
+  // Greet once on first user gesture
   const hasGreeted = useRef(false);
   const greetOnFirstTouch = useCallback(() => {
     voice.markInteracted();
     if (!hasGreeted.current) {
       hasGreeted.current = true;
+      // The greeting text is already shown statically when messages=[]
+      // Only speak it — don't add it to messages again
       voice.speak(greetingText);
     }
   }, [voice, greetingText]);
 
-  // ── Text input submit ────────────────────────────────────────────────────
+  // Pre-warm voice engine
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.getVoices();
+    }
+  }, []);
+
+  // ── Text submit ───────────────────────────────────────────────────────────
   const submitText = useCallback(async () => {
     const trimmed = textInput.trim();
     if (!trimmed || isProcessing) return;
@@ -143,9 +202,9 @@ export function PatientHome() {
     try {
       const resp = await agentDispatch(trimmed, agentCtxRef.current);
       applyResponse(resp, trimmed);
-      setSelectedSymptoms(agentCtxRef.current.symptoms.map((s) => ({
-        symptom: s.symptom, source: s.source,
-      })));
+      setSelectedSymptoms(
+        agentCtxRef.current.symptoms.map((s) => ({ symptom: s.symptom, source: s.source })),
+      );
     } finally {
       setIsProcessing(false);
     }
@@ -155,15 +214,15 @@ export function PatientHome() {
     if (e.key === 'Enter') void submitText();
   };
 
-  // ── Mic click ────────────────────────────────────────────────────────────
+  // ── Mic ───────────────────────────────────────────────────────────────────
   const handleMic = useCallback(() => {
     greetOnFirstTouch();
-    if (voice.state === 'SPEAKING') { voice.cancel(); setTimeout(() => voice.listen(), 200); }
+    if (voice.state === 'SPEAKING')  { voice.cancel(); setTimeout(() => voice.listen(), 150); }
     else if (voice.state === 'LISTENING') { voice.stopListening(); }
     else { voice.listen(); }
   }, [voice, greetOnFirstTouch]);
 
-  // ── Symptom picker ───────────────────────────────────────────────────────
+  // ── Symptom picker ────────────────────────────────────────────────────────
   const handleSymptomAdd = useCallback((s: SelectedSymptom) => {
     addTappedSymptoms(agentCtxRef.current, [s.symptom]);
     setSelectedSymptoms((prev) => [...prev, s]);
@@ -176,10 +235,8 @@ export function PatientHome() {
 
   const handleSymptomDone = useCallback(async () => {
     if (selectedSymptoms.length === 0) return;
-    const list = selectedSymptoms.map((s) => s.symptom).join(', ');
-    const trigger = isKn
-      ? `ನನಗೆ ${list} ಇದೆ.`
-      : isHi ? `मुझे ${list} है।` : `I have ${list}.`;
+    const list    = selectedSymptoms.map((s) => s.symptom).join(', ');
+    const trigger = isKn ? `ನನಗೆ ${list} ಇದೆ.` : isHi ? `मुझे ${list} है।` : `I have ${list}.`;
     setIsProcessing(true);
     try {
       const resp = await agentDispatch(trigger, agentCtxRef.current);
@@ -189,7 +246,7 @@ export function PatientHome() {
     }
   }, [selectedSymptoms, isKn, isHi, applyResponse]);
 
-  // ── Confirmation buttons ─────────────────────────────────────────────────
+  // ── Confirmation ──────────────────────────────────────────────────────────
   const handleConfirm = useCallback(async () => {
     setAwaitingConfirm(false);
     const resp = await confirmPending(agentCtxRef.current);
@@ -203,80 +260,140 @@ export function PatientHome() {
     applyResponse(resp);
   }, [language, applyResponse]);
 
+  // ── Replay last AI response ───────────────────────────────────────────────
+  const handleReplay = useCallback(() => {
+    voice.markInteracted();
+    voice.cancel();
+    setTimeout(() => voice.speak(lastAiTextRef.current), 80);
+  }, [voice]);
+
   const isListening  = voice.state === 'LISTENING';
   const isSpeaking   = voice.state === 'SPEAKING';
+  const isThinking   = voice.state === 'PROCESSING';
 
-  // ── Quick greeting to fire TTS on page-level click ───────────────────────
-  useEffect(() => {
-    // Pre-warm voice engines so first speak() is fast
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.getVoices();
-    }
-  }, []);
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="patient-home-root" onClick={greetOnFirstTouch}>
+    <div className="ph-root" onClick={greetOnFirstTouch}>
 
-      {/* Offline banner */}
+      {/* ── Sticky header ── */}
+      <header className="ph-header">
+        <div className="ph-header-brand">
+          <span className="ph-brand-name">MEDORA</span>
+          {firstName && (
+            <span className="ph-brand-patient">
+              {isKn ? `ನಮಸ್ಕಾರ, ${firstName}` : isHi ? `नमस्ते, ${firstName}` : `Hello, ${firstName}`}
+            </span>
+          )}
+        </div>
+        <div className="ph-header-actions">
+          <PatientLanguageSelect />
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); logout(); }}
+            className="ph-signout-btn"
+          >
+            {isKn ? 'ಹೊರಗೆ' : isHi ? 'बाहर' : 'Sign out'}
+          </button>
+        </div>
+      </header>
+
+      {/* ── Contextual banners (only when relevant) ── */}
       {!online && (
-        <div className="patient-offline-banner" role="status" aria-live="polite">
+        <div className="ph-banner ph-banner--offline" role="status" aria-live="polite">
           <WifiOff className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <p className="text-sm leading-snug">{t('patient.home.offline')}</p>
+          <p className="text-sm">{t('patient.home.offline')}</p>
+        </div>
+      )}
+      {voice.ttsSupported && !voice.ttsVoiceAvailable && (
+        <div className="ph-banner ph-banner--info" role="status">
+          <VolumeX className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <p className="text-sm">
+            {voice.ttsVoiceRequiresNetwork
+              ? 'The installed voice requires internet access. MEDORA is using text instead.'
+              : isKn
+              ? 'ಈ ಸಾಧನದಲ್ಲಿ ಕನ್ನಡ ಧ್ವನಿ ಇಲ್ಲ. ಪ್ರತಿಕ್ರಿಯೆ ಪರದೆಯಲ್ಲಿ ಓದಬಹುದು.'
+              : 'No voice available for this language. Responses are shown as text.'}
+          </p>
+        </div>
+      )}
+      {voice.error && (
+        <div className="ph-banner ph-banner--warn" role="status" aria-live="polite">
+          <p className="text-sm">{voice.error}</p>
         </div>
       )}
 
-      {/* Header */}
-      <header className="patient-home-header">
-        <div>
-          <p className="patient-home-greeting">
-            {isKn ? 'ನಮಸ್ಕಾರ' : isHi ? 'नमस्ते' : 'Hello'}
-            {firstName ? `, ${firstName}` : ''} 👋
-          </p>
-          <p className="patient-home-subtitle">MEDORA · Smarter Care. Healthier Futures.</p>
+      {/* ── Avatar hero ── */}
+      <div
+        className="ph-avatar-hero"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <ArrohHumanAvatar state={voice.state} size="lg" className="ph-avatar" />
+
+        {/* State label */}
+        <p className="ph-avatar-label" aria-live="polite" aria-atomic="true">
+          {isListening ? (isKn ? 'ಕೇಳುತ್ತಿದ್ದೇನೆ…'   : 'Listening…')
+          : isSpeaking  ? (isKn ? 'ಮಾತಾಡುತ್ತಿದ್ದೇನೆ…' : 'Speaking…')
+          : isThinking  ? (isKn ? 'ಯೋಚಿಸುತ್ತಿದ್ದೇನೆ…' : 'Thinking…')
+          : '\u00A0'}
+        </p>
+
+        {/* Replay & stop controls */}
+        <div className="ph-avatar-controls">
+          {isSpeaking && (
+            <button
+              type="button"
+              onClick={voice.cancel}
+              className="ph-ctrl-btn ph-ctrl-btn--stop"
+              aria-label={isKn ? 'ನಿಲ್ಲಿಸಿ' : 'Stop speaking'}
+            >
+              <VolumeX className="h-4 w-4" aria-hidden="true" />
+              <span className="text-xs">{isKn ? 'ನಿಲ್ಲಿಸಿ' : 'Stop'}</span>
+            </button>
+          )}
+          {!isSpeaking && voice.ttsVoiceAvailable && lastAiTextRef.current && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); handleReplay(); }}
+              className="ph-ctrl-btn ph-ctrl-btn--replay"
+              aria-label={isKn ? 'ಮತ್ತೆ ಕೇಳಿ' : 'Replay last response'}
+            >
+              <Volume2 className="h-4 w-4" aria-hidden="true" />
+              <span className="text-xs">{isKn ? 'ಮತ್ತೆ ಕೇಳಿ' : 'Replay'}</span>
+            </button>
+          )}
         </div>
-        <button type="button" onClick={logout} className="patient-home-logout">
-          {isKn ? 'ಹೊರಗೆ' : isHi ? 'बाहर' : 'Sign out'}
-        </button>
-      </header>
+      </div>
 
-      {/* ── Avatar + conversation area ── */}
-      <div className="ph-conv-area">
-        {/* Avatar */}
-        <div className="ph-avatar-wrap" aria-live="polite" aria-label="MEDORA assistant">
-          <ArrohHumanAvatar state={voice.state} size="lg" className="ph-avatar" />
-          <div className="ph-avatar-label">
-            <span className="ph-avatar-name">MEDORA</span>
-            <span className="ph-avatar-status">
-              {isListening  ? (isKn ? 'ಕೇಳುತ್ತಿದ್ದೇನೆ…'   : 'Listening…')
-             : isSpeaking   ? (isKn ? 'ಮಾತಾಡುತ್ತಿದ್ದೇನೆ…' : 'Speaking…')
-             : isProcessing ? (isKn ? 'ಯೋಚಿಸುತ್ತಿದ್ದೇನೆ…' : 'Thinking…')
-             :                (isKn ? 'ಸಿದ್ಧ'              : 'Ready')}
-            </span>
-          </div>
-        </div>
-
-        {voice.error && <p role="status" className="text-sm text-amber-800">{voice.error}</p>}
-
-        {/* Transcript */}
-        <div className="ph-transcript" role="log" aria-live="polite">
-          {displayedMessages.slice(-6).map((msg, i) => (
+      {/* ── Conversation transcript ── */}
+      <section
+        className="ph-transcript-section"
+        aria-label={isKn ? 'ಸಂಭಾಷಣೆ' : 'Conversation'}
+      >
+        <div
+          className="ph-transcript"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions"
+        >
+          {displayedMessages.slice(-6).map((msg) => (
             <div
-              key={i}
+              key={msg.id}
               className={cn('ph-msg', msg.role === 'ai' ? 'ph-msg--ai' : 'ph-msg--user')}
             >
-              <p className="text-sm leading-relaxed">{msg.text}</p>
+              {msg.role === 'ai' && (
+                <span className="ph-msg-role" aria-hidden="true">MEDORA</span>
+              )}
+              <p className="ph-msg-text">{msg.text}</p>
             </div>
           ))}
+
+          {/* Thinking indicator */}
           {isProcessing && (
             <div className="ph-msg ph-msg--ai">
-              <span className="flex gap-1.5 py-0.5">
-                {[0, 1, 2].map((i) => (
-                  <span
-                    key={i}
-                    className="h-2 w-2 rounded-full bg-brand-400 orb-neural-dot-inline"
-                    style={{ animationDelay: `${i * 0.2}s` }}
-                  />
-                ))}
+              <span className="ph-msg-role" aria-hidden="true">MEDORA</span>
+              <span className="ph-thinking-dots" aria-label={isKn ? 'ಯೋಚಿಸುತ್ತಿದ್ದೇನೆ' : 'Thinking'}>
+                <span /><span /><span />
               </span>
             </div>
           )}
@@ -285,117 +402,176 @@ export function PatientHome() {
 
         {/* ── Confirmation gate ── */}
         {awaitingConfirm && (
-          <div className="ph-confirm-row">
-            <button type="button" onClick={handleConfirm} className="ph-confirm-yes">
+          <div className="ph-confirm-gate" role="group" aria-label={isKn ? 'ದೃಢೀಕರಣ' : 'Confirm action'}>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); void handleConfirm(); }}
+              className="ph-confirm-yes"
+            >
               <CheckCircle className="h-4 w-4" aria-hidden="true" />
               {isKn ? 'ಹೌದು' : isHi ? 'हाँ' : 'Yes'}
             </button>
-            <button type="button" onClick={handleCancel} className="ph-confirm-no">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); handleCancel(); }}
+              className="ph-confirm-no"
+            >
               <XCircle className="h-4 w-4" aria-hidden="true" />
               {isKn ? 'ಬದಲಾಯಿಸಿ' : isHi ? 'बदलें' : 'Change'}
             </button>
           </div>
         )}
 
-        {/* ── Symptom picker (shown when agent requests it) ── */}
-        {(activeAction === 'SHOW_SYMPTOM_PICKER' || selectedSymptoms.length > 0) && !awaitingConfirm && (
-          <SymptomPicker
-            language={language}
-            selected={selectedSymptoms}
-            onAdd={handleSymptomAdd}
-            onRemove={handleSymptomRemove}
-            onDone={handleSymptomDone}
-            disabled={isProcessing}
-          />
-        )}
+        {/* ── Symptom picker ── */}
+        {(activeAction === 'SHOW_SYMPTOM_PICKER' || selectedSymptoms.length > 0) &&
+          !awaitingConfirm && (
+            <SymptomPicker
+              language={language}
+              selected={selectedSymptoms}
+              onAdd={handleSymptomAdd}
+              onRemove={handleSymptomRemove}
+              onDone={handleSymptomDone}
+              disabled={isProcessing}
+            />
+          )}
+      </section>
 
-        {/* ── Mic + text input row ── */}
-        <div className="ph-input-row" onClick={(e) => e.stopPropagation()}>
-          {/* Mic button */}
-          <button
-            type="button"
-            onClick={handleMic}
-            disabled={isProcessing}
-            aria-label={isListening ? (isKn ? 'ನಿಲ್ಲಿಸಿ' : 'Stop') : (isKn ? 'ಮಾತನಾಡಿ' : 'Speak')}
-            aria-pressed={isListening}
-            className={cn(
-              'ph-mic-btn',
-              isListening && 'ph-mic-btn--active',
-              isSpeaking  && 'ph-mic-btn--speaking',
-            )}
-          >
-            {isListening
-              ? <MicOff className="h-6 w-6" aria-hidden="true" />
-              : <Mic    className="h-6 w-6" aria-hidden="true" />}
-          </button>
+      {/* ── Input row (stays above keyboard) ── */}
+      <div
+        className="ph-input-bar"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Mic */}
+        <button
+          type="button"
+          onClick={handleMic}
+          disabled={isProcessing || !voice.sttSupported}
+          aria-label={
+            !voice.sttSupported
+              ? (isKn ? 'ಧ್ವನಿ ಬೆಂಬಲ ಇಲ್ಲ' : 'Voice not supported')
+              : isListening
+              ? (isKn ? 'ನಿಲ್ಲಿಸಿ' : 'Stop listening')
+              : (isKn ? 'ಮಾತನಾಡಿ' : 'Speak')
+          }
+          aria-pressed={isListening}
+          title={!voice.sttSupported ? (isKn ? 'ಧ್ವನಿ ಬೆಂಬಲ ಇಲ್ಲ — ಟೈಪ್ ಮಾಡಿ' : 'Voice not supported — please type') : undefined}
+          className={cn(
+            'ph-mic-btn',
+            isListening  && 'ph-mic-btn--active',
+            isSpeaking   && 'ph-mic-btn--speaking',
+            !voice.sttSupported && 'ph-mic-btn--disabled',
+          )}
+        >
+          {isListening
+            ? <MicOff className="h-5 w-5" aria-hidden="true" />
+            : <Mic    className="h-5 w-5" aria-hidden="true" />}
+        </button>
 
-          {/* Text input */}
-          <input
-            type="text"
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            onKeyDown={handleTextKey}
-            onClick={(e) => { e.stopPropagation(); greetOnFirstTouch(); }}
-            placeholder={isKn ? 'ಇಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ…' : isHi ? 'यहाँ टाइप करें…' : 'Type here…'}
-            aria-label={isKn ? 'ಸಂದೇಶ ಟೈಪ್ ಮಾಡಿ' : 'Type a message'}
-            className="ph-text-input"
-            disabled={isProcessing}
-          />
+        {/* Text input */}
+        <input
+          ref={inputRef}
+          type="text"
+          value={textInput}
+          onChange={(e) => setTextInput(e.target.value)}
+          onKeyDown={handleTextKey}
+          onFocus={() => { voice.markInteracted(); greetOnFirstTouch(); }}
+          placeholder={
+            isKn ? 'ಇಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ…'
+            : isHi ? 'यहाँ टाइप करें…'
+            : 'Type here…'
+          }
+          aria-label={isKn ? 'ಸಂದೇಶ ಟೈಪ್ ಮಾಡಿ' : 'Type a message'}
+          className="ph-text-input"
+          disabled={isProcessing}
+          autoComplete="off"
+        />
 
-          {/* Send button */}
-          <button
-            type="button"
-            onClick={submitText}
-            disabled={!textInput.trim() || isProcessing}
-            aria-label={isKn ? 'ಕಳಿಸಿ' : 'Send'}
-            className="ph-send-btn"
-          >
-            <Send className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
+        {/* Send */}
+        <button
+          type="button"
+          onClick={() => void submitText()}
+          disabled={!textInput.trim() || isProcessing}
+          aria-label={isKn ? 'ಕಳಿಸಿ' : 'Send'}
+          className="ph-send-btn"
+        >
+          <Send className="h-4 w-4" aria-hidden="true" />
+        </button>
       </div>
 
-      {/* ── Secondary action tiles ── */}
-      <div className="ph-grid" role="navigation" aria-label={isKn ? 'ಮುಖ್ಯ ಮೆನು' : 'Main menu'}>
-        <Tile icon={Heart}        label={t('patient.home.health')}       color="rose"    onClick={() => {}} />
-        <Tile icon={Calendar}     label={t('patient.home.appointments')} color="blue"    onClick={() => {}} />
-        <Tile icon={FileText}     label={t('patient.home.reports')}      color="violet"  onClick={() => {}} />
-        <Tile icon={ArrowUpRight} label={t('patient.home.referrals')}    color="amber"   onClick={() => {}} />
-        <Tile icon={Pill}         label={t('patient.home.medicines')}    color="emerald" onClick={() => {
-          void handleTranscript(isKn ? 'ಔಷಧಿ ತೋರಿಸಿ' : 'Show my medicines');
-        }} />
-        <Tile
+      {/* ── Quick-action grid ── */}
+      <nav
+        className="ph-quick-grid"
+        aria-label={isKn ? 'ತ್ವರಿತ ಕ್ರಿಯೆಗಳು' : 'Quick actions'}
+      >
+        <QuickTile
+          icon={Heart}
+          label={t('patient.home.health')}
+          color="rose"
+          onClick={() => {}}
+        />
+        <QuickTile
+          icon={Calendar}
+          label={t('patient.home.appointments')}
+          color="blue"
+          onClick={() => {}}
+        />
+        <QuickTile
+          icon={FileText}
+          label={t('patient.home.reports')}
+          color="violet"
+          onClick={() => {}}
+        />
+        <QuickTile
+          icon={ArrowUpRight}
+          label={t('patient.home.referrals')}
+          color="amber"
+          onClick={() => {}}
+        />
+        <QuickTile
+          icon={Pill}
+          label={t('patient.home.medicines')}
+          color="emerald"
+          onClick={() => {
+            void handleTranscript(isKn ? 'ಔಷಧಿ ತೋರಿಸಿ' : 'Show my medicines');
+          }}
+        />
+        <QuickTile
           icon={Siren}
           label={t('patient.home.emergency')}
-          sub={t('patient.home.emergency.sub')}
+          sublabel={t('patient.home.emergency.sub')}
           color="red"
           onClick={() => navigate('/emergency')}
           wide
         />
-      </div>
+      </nav>
 
       <p className="ph-disclaimer">{t('medical.disclaimer')}</p>
     </div>
   );
 }
 
-// ── Action tile ───────────────────────────────────────────────────────────────
+// ── QuickTile ─────────────────────────────────────────────────────────────────
 
 const TILE_COLORS: Record<string, string> = {
-  rose:    'bg-rose-50   text-rose-600   border-rose-100',
-  blue:    'bg-blue-50   text-blue-600   border-blue-100',
-  violet:  'bg-violet-50 text-violet-600 border-violet-100',
-  amber:   'bg-amber-50  text-amber-600  border-amber-100',
-  emerald: 'bg-emerald-50 text-emerald-600 border-emerald-100',
-  red:     'bg-red-50    text-red-600    border-red-200',
+  rose:    'ph-tile--rose',
+  blue:    'ph-tile--blue',
+  violet:  'ph-tile--violet',
+  amber:   'ph-tile--amber',
+  emerald: 'ph-tile--emerald',
+  red:     'ph-tile--red',
 };
 
-function Tile({
-  icon: Icon, label, sub, color, onClick, wide,
+function QuickTile({
+  icon: Icon,
+  label,
+  sublabel,
+  color,
+  onClick,
+  wide,
 }: {
   icon: React.ElementType;
   label: string;
-  sub?: string;
+  sublabel?: string;
   color: string;
   onClick: () => void;
   wide?: boolean;
@@ -407,10 +583,10 @@ function Tile({
       className={cn('ph-tile', TILE_COLORS[color], wide && 'ph-tile--wide')}
     >
       <span className={cn('ph-tile-icon', wide && 'ph-tile-icon--lg')}>
-        <Icon className={wide ? 'h-6 w-6' : 'h-5 w-5'} aria-hidden="true" />
+        <Icon className={wide ? 'h-5 w-5' : 'h-4 w-4'} aria-hidden="true" />
       </span>
       <span className="ph-tile-label">{label}</span>
-      {sub && <span className="ph-tile-sub">{sub}</span>}
+      {sublabel && <span className="ph-tile-sublabel">{sublabel}</span>}
     </button>
   );
 }

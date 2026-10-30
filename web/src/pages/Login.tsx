@@ -252,7 +252,7 @@ function TypingText({ texts }: { texts: string[] }) {
 /* ─────────────────────────── Main Login ─────────────────────────── */
 
 export function Login() {
-  const { isAuthenticated, login, register } = useAuth();
+  const { isAuthenticated, isSessionReady, login, register } = useAuth();
   const navigate = useNavigate();
 
   const [mode, setMode] = useState<Mode>('login');
@@ -265,7 +265,7 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  if (isAuthenticated) return <Navigate to="/" replace />;
+  if (isSessionReady && isAuthenticated) return <Navigate to="/" replace />;
 
   const isRegister = mode === 'register';
 

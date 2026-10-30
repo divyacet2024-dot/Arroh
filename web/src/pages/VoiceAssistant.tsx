@@ -12,7 +12,7 @@ import { ErrorState } from '../components/ErrorState';
 import { Badge } from '../components/ui/Badge';
 import { formatVital, humanize } from '../lib/format';
 import { SUPPORTED_LANGUAGES } from '../lib/constants';
-import { getLanguageConfig } from '../lib/languageConfig';
+import { getLanguageConfig, prepareSpeechText } from '../lib/languageConfig';
 import type { VoiceParseResponse } from '../types';
 import type { TriageStatus } from '../types';
 
@@ -23,18 +23,31 @@ interface SpeechRecognitionLike {
   start: () => void;
   stop: () => void;
   abort: () => void;
+  onstart: (() => void) | null;
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
   onerror: ((event: { error: string; message?: string }) => void) | null;
   onend: (() => void) | null;
 }
 
-function getSpeechRecognition(): SpeechRecognitionLike | null {
-  const w = window as unknown as {
-    SpeechRecognition?: new () => SpeechRecognitionLike;
-    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') return null;
+  const browser = window as Window & {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
   };
-  const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-  return Ctor ? new Ctor() : null;
+  return browser.SpeechRecognition ?? browser.webkitSpeechRecognition ?? null;
+}
+
+function getSpeechRecognition(): SpeechRecognitionLike | null {
+  const Ctor = getSpeechRecognitionConstructor();
+  if (!Ctor) return null;
+  try {
+    return new Ctor();
+  } catch {
+    return null;
+  }
 }
 
 /** Only choose a browser voice whose language matches the requested language. */
@@ -63,21 +76,26 @@ export function VoiceAssistant() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown | null>(null);
   const [listening, setListening] = useState(false);
-  const [speechSupported, setSpeechSupported] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(
+    () => getSpeechRecognitionConstructor() !== null,
+  );
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => {
-    setSpeechSupported(getSpeechRecognition() !== null);
     return () => {
       if (recognitionRef.current) {
-        recognitionRef.current.onresult = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.onend = null;
-        recognitionRef.current.abort();
+        const recognition = recognitionRef.current;
+        recognitionRef.current = null;
+        recognition.onstart = null;
+        recognition.onresult = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+        recognition.abort();
       }
+      utteranceRef.current = null;
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     };
   }, []);
@@ -104,14 +122,19 @@ export function VoiceAssistant() {
       return;
     }
     const synth = window.speechSynthesis;
-    const voice = pickVoice(voices.length ? voices : synth.getVoices(), code);
+    const availableVoices = voices.length ? voices : synth.getVoices();
+    const voice = pickVoice(availableVoices, code);
     if (!voice) {
       setSpeaking(false);
-      setSpeechError(`A ${config.displayName} speech voice is not currently available. Voice resources may still be loading; retry or read the reply shown below.`);
+      setSpeechError(
+        availableVoices.length === 0
+          ? `The ${config.displayName} voice list is still loading. Retry shortly or read the reply shown below.`
+          : `A ${config.displayName} speech voice is not installed on this device. Read the reply shown below or install a compatible voice in device settings.`,
+      );
       return;
     }
     synth.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const utterance = new SpeechSynthesisUtterance(prepareSpeechText(text, code));
     utterance.lang = config.ttsLocale;
     utterance.voice = voice;
     utterance.rate = config.ttsRate;
@@ -134,7 +157,6 @@ export function VoiceAssistant() {
     };
     utteranceRef.current = utterance;
     setSpeechError(null);
-    setSpeaking(true);
     synth.speak(utterance);
   }
 
@@ -164,6 +186,9 @@ export function VoiceAssistant() {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     utteranceRef.current = null;
     setSpeaking(false);
+    recognition.onstart = () => {
+      if (recognitionRef.current === recognition) setListening(true);
+    };
     recognition.onresult = (event) => {
       const first = event.results[0]?.[0];
       if (first?.transcript) {
@@ -182,7 +207,7 @@ export function VoiceAssistant() {
           ? 'Microphone permission was denied. Please allow access in your browser settings, or type the transcript below.'
           : code === 'no-speech'
             ? 'No speech was detected. Try again or type the transcript below.'
-            : `Microphone capture failed (${code}). You can still type the transcript below.`,
+            : 'Microphone capture failed. Check microphone access and try again, or type the transcript below.',
       );
       setListening(false);
     };
@@ -194,7 +219,6 @@ export function VoiceAssistant() {
     recognitionRef.current = recognition;
     try {
       recognition.start();
-      setListening(true);
     } catch (cause) {
       recognitionRef.current = null;
       setSpeechError(
@@ -215,7 +239,6 @@ export function VoiceAssistant() {
       recognitionRef.current = null;
       return;
     }
-    setListening(false);
   }
 
   async function onSubmit(event: FormEvent) {

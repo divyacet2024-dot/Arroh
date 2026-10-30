@@ -57,6 +57,7 @@ export interface PatientAuthContextValue {
   user: PatientTokenUser | null;
   token: string | null;
   isAuthenticated: boolean;
+  isSessionReady: boolean;
   /** Store a verified session after OTP success. */
   applySession: (user: PatientTokenUser, token: string) => void;
   /** Clear the session and return to the welcome screen. */
@@ -67,11 +68,15 @@ const PatientAuthContext = createContext<PatientAuthContextValue | null>(null);
 
 export function PatientAuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<PatientSession>(() => readSession());
+  const [isSessionReady, setIsSessionReady] = useState(() => !readSession().token);
 
   // Re-validate the persisted token once on boot.
   useEffect(() => {
     const initial = readSession();
-    if (!initial.token) return;
+    if (!initial.token) {
+      setIsSessionReady(true);
+      return;
+    }
     let cancelled = false;
     getPatientMe(initial.token)
       .then((user) => {
@@ -87,6 +92,9 @@ export function PatientAuthProvider({ children }: { children: ReactNode }) {
           setSession({ user: null, token: null });
           clearSession();
         }
+      })
+      .finally(() => {
+        if (!cancelled) setIsSessionReady(true);
       });
     return () => { cancelled = true; };
   }, []);
@@ -107,10 +115,11 @@ export function PatientAuthProvider({ children }: { children: ReactNode }) {
       user: session.user,
       token: session.token,
       isAuthenticated: session.user !== null && session.token !== null,
+      isSessionReady,
       applySession,
       logout,
     }),
-    [session, applySession, logout],
+    [session, isSessionReady, applySession, logout],
   );
 
   return (
@@ -128,7 +137,14 @@ export function usePatientAuth(): PatientAuthContextValue {
 
 /** Route guard — redirects unauthenticated patients to the welcome screen. */
 export function RequirePatient({ children }: { children: ReactNode }) {
-  const { isAuthenticated } = usePatientAuth();
+  const { isAuthenticated, isSessionReady } = usePatientAuth();
+  if (!isSessionReady) {
+    return (
+      <div role="status" aria-label="Checking patient session" className="grid min-h-dvh place-items-center bg-slate-50">
+        <span className="sr-only">Checking patient session…</span>
+      </div>
+    );
+  }
   if (!isAuthenticated) return <Navigate to="/" replace />;
   return <>{children}</>;
 }

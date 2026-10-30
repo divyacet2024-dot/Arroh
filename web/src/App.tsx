@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { AuthProvider, RequireAuth } from './lib/auth';
 import { PatientAuthProvider, RequirePatient } from './lib/patientAuth';
@@ -27,25 +27,9 @@ import { Inventory }        from './pages/Inventory';
 import { Sync }             from './pages/Sync';
 import { CaseTakingPage }   from './pages/CaseTaking';
 import { CaseReview }       from './pages/CaseReview';
-import { Consultation }     from './pages/Consultation';
+import { Consultation } from './pages/Consultation';
+import { HospitalFinder } from './pages/HospitalFinder';
 import { DoctorHome }       from './pages/DoctorHome';
-import { Button }           from './components/ui/Button';
-import { SearchX }          from 'lucide-react';
-
-function NotFound() {
-  return (
-    <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-      <span className="rounded-full bg-slate-100 p-4 text-slate-400">
-        <SearchX className="h-7 w-7" aria-hidden="true" />
-      </span>
-      <h1 className="text-2xl font-bold text-slate-900">Page not found</h1>
-      <p className="max-w-sm text-sm text-slate-500">
-        The route you requested does not exist.
-      </p>
-      <Link to="/"><Button variant="outline">Back to home</Button></Link>
-    </div>
-  );
-}
 
 export default function App() {
   return (
@@ -94,8 +78,11 @@ export default function App() {
                     <Route path="/case-taking"  element={<CaseTakingPage />} />
                     <Route path="/case/:caseId" element={<CaseReview />} />
                     <Route path="/consultation" element={<Consultation />} />
-                    <Route path="*"             element={<NotFound />} />
+                  <Route path="/find-care" element={<HospitalFinder />} />
                   </Route>
+                  {/* Unknown/restored startup paths should return to role selection,
+                      not be captured by the protected staff route and redirected to /login. */}
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </AuthProvider>
             </PatientAuthProvider>

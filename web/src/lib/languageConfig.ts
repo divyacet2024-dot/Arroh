@@ -133,6 +133,12 @@ export function getLanguageConfig(code: string): LanguageConfig | undefined {
   return BY_CODE.get(code.trim().replace('_', '-').toLowerCase());
 }
 
+/** Apply verified, speech-only pronunciation guidance without changing UI text. */
+export function prepareSpeechText(text: string, code: string): string {
+  if (getLanguageConfig(code)?.code !== 'hi-IN') return text;
+  return text.replace(/\bMEDORA\b/gi, 'मेडोरा');
+}
+
 /** Default language for MEDORA — Kannada. */
 export const DEFAULT_LANGUAGE_CONFIG = BY_CODE.get('kn-in')!;
 

@@ -12,56 +12,123 @@ import { Capacitor } from '@capacitor/core';
 import { Tts } from './nativeTtsPlugin';
 import type { OfflineTTSService } from './interfaces';
 
-export function createNativeOfflineTTSService(): OfflineTTSService {
-  const isNative = Capacitor.isNativePlatform();
+type TtsPlatform = Pick<typeof Tts, 'isReady' | 'getVoices' | 'checkLanguage' | 'speak' | 'stop' | 'addListener'>;
+
+interface TtsServiceError extends Error {
+  code: string;
+}
+
+function createTtsError(code: string, message: string): TtsServiceError {
+  return Object.assign(new Error(message), { code });
+}
+
+async function waitForEngine(plugin: TtsPlatform): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const status = await plugin.isReady();
+    if (status.ready) return;
+    if (status.error) {
+      throw createTtsError('initialization_failed', 'Android text-to-speech could not be initialized.');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw createTtsError('initialization_failed', 'Android text-to-speech is taking too long to initialize.');
+}
+
+export function createNativeOfflineTTSService(
+  platform = Capacitor.getPlatform(),
+  plugin: TtsPlatform = Tts,
+): OfflineTTSService {
+  const isAndroid = platform === 'android';
 
   return {
     get available(): boolean {
-      return isNative;
+      return isAndroid;
     },
 
     async getVoices() {
-      if (!isNative) return [];
-      try {
-        const { voices } = await Tts.getVoices();
-        return voices.map((voice) => ({ language: voice.language, label: voice.label }));
-      } catch {
-        return [];
-      }
+      if (!isAndroid) return [];
+      await waitForEngine(plugin);
+      const { voices } = await plugin.getVoices();
+      return voices.map(({ language, label, available, requiresNetworkConnection }) => ({
+        language,
+        label,
+        available,
+        requiresNetworkConnection,
+      }));
     },
 
     async checkLanguage(language: string) {
-      if (!isNative) return { available: false, label: language };
-      try {
-        const result = await Tts.checkLanguage({ language });
-        return { available: result.available, label: result.label };
-      } catch {
-        return { available: false, label: language };
+      if (!isAndroid) {
+        return { available: false, label: language, requiresNetworkConnection: false, voiceName: null };
       }
+      await waitForEngine(plugin);
+      const result = await plugin.checkLanguage({ language });
+      return {
+        available: result.available,
+        label: result.label,
+        requiresNetworkConnection: result.requiresNetworkConnection,
+        voiceName: result.voiceName,
+      };
     },
 
     async speak(text, options) {
-      if (!isNative) {
-        const error = new Error('Offline TTS is unavailable outside the native app');
-        (error as { code?: string }).code = 'runtime_unavailable';
-        throw error;
+      if (!isAndroid) {
+        throw createTtsError('runtime_unavailable', 'Android text-to-speech is unavailable on this platform.');
       }
-      const result = await Tts.speak({
-        text,
-        language: options.language,
-        rate: options.rate,
+      await waitForEngine(plugin);
+      const capability = await plugin.checkLanguage({ language: options.language });
+      if (!capability.available) {
+        throw createTtsError(
+          capability.requiresNetworkConnection ? 'network_required' : 'voice_unavailable',
+          capability.requiresNetworkConnection
+            ? `The installed ${capability.label} voice requires a network connection; MEDORA only uses offline Android voices.`
+            : `An offline ${capability.label} voice is not installed on this device.`,
+        );
+      }
+
+      const utteranceId = `medora-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const completionListeners = new Map<string, () => void>();
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const completion = new Promise<void>((resolve, reject) => {
+        timeoutId = setTimeout(
+          () => reject(createTtsError('playback_timeout', 'Android speech playback did not finish.')),
+          120_000,
+        );
+        completionListeners.set('ttsStart', () => options.onStart?.());
+        completionListeners.set('ttsDone', resolve);
+        completionListeners.set('ttsStop', () => reject(createTtsError('cancelled', 'Speech was stopped.')));
+        completionListeners.set('ttsError', () => reject(createTtsError('playback_failed', 'Android speech playback failed.')));
       });
-      if (!result.success) {
-        const error = new Error(result.message ?? 'Speech is not available offline for this language');
-        (error as { code?: string }).code = 'language_unsupported';
-        throw error;
+      void completion.catch(() => undefined);
+
+      const handles: Awaited<ReturnType<TtsPlatform['addListener']>>[] = [];
+      try {
+        for (const eventName of ['ttsStart', 'ttsDone', 'ttsStop', 'ttsError'] as const) {
+          handles.push(await plugin.addListener(eventName, (event) => {
+            if (event.utteranceId !== utteranceId) return;
+            const callback = completionListeners.get(eventName);
+            callback?.();
+          }));
+        }
+        const result = await plugin.speak({
+          text,
+          language: options.language,
+          rate: options.rate,
+          utteranceId,
+        });
+        if (!result.success) {
+          throw createTtsError('playback_failed', 'Android speech playback could not be started.');
+        }
+        await completion;
+      } finally {
+        clearTimeout(timeoutId!);
+        await Promise.all(handles.map((handle) => handle.remove()));
       }
     },
 
     async stop() {
-      if (isNative) {
-        await Tts.stop();
-      }
+      if (isAndroid) await plugin.stop();
     },
   };
 }

@@ -15,6 +15,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.patient_auth import router as patient_auth_router
 from app.api.v1.case_taking import router as case_taking_router
 from app.api.v1.patients import router as patients_router
+from app.api.v1.places import router as places_router
 from app.api.v1.inventory import router as inventory_router
 from app.api.v1.prescriptions import router as care_prescriptions_router
 from app.api.v1.referrals import router as referrals_router
@@ -57,6 +58,7 @@ _DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
+    "http://localhost:5174",
     "http://127.0.0.1:5173",
 ]
 
@@ -164,6 +166,7 @@ app.include_router(auth_router, prefix=settings.api_v1_prefix)
 app.include_router(patient_auth_router, prefix=settings.api_v1_prefix)
 app.include_router(case_taking_router, prefix=settings.api_v1_prefix)
 app.include_router(patients_router, prefix=settings.api_v1_prefix)
+app.include_router(places_router, prefix=settings.api_v1_prefix)
 app.include_router(sync_router, prefix=settings.api_v1_prefix)
 app.include_router(triage_router, prefix=settings.api_v1_prefix)
 app.include_router(inventory_router, prefix=settings.api_v1_prefix)

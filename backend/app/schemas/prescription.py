@@ -26,6 +26,7 @@ class CarePrescriptionCreateSchema(BaseModel):
 
     patient_id: uuid.UUID
     consultation_id: uuid.UUID | None = None
+    consultation_local_uuid: str | None = Field(default=None, min_length=1, max_length=128)
     doctor_id: str = Field(min_length=1, max_length=128)
     diagnosis: str = Field(min_length=2, max_length=2_000)
     medications: list[MedicationInstructionSchema] = Field(min_length=1, max_length=20)

@@ -371,3 +371,28 @@ export interface LoginInput {
   email: string;
   password: string;
 }
+
+/* ------------------------------ Places ------------------------------ */
+
+export interface NearbyPlace {
+  name: string;
+  place_type: 'hospital' | 'pharmacy';
+  latitude: number;
+  longitude: number;
+  distance_km: number;
+  address: string | null;
+  phone: string | null;
+  opening_hours: string | null;
+  website: string | null;
+  source: string;
+}
+
+export interface NearbyPlacesResponse {
+  latitude: number;
+  longitude: number;
+  radius_m: number;
+  place_type: 'hospital' | 'pharmacy' | 'all';
+  count: number;
+  results: NearbyPlace[];
+  provider: string;
+}

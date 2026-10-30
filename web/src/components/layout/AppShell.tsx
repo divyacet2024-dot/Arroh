@@ -11,6 +11,7 @@ import {
   Package,
   CloudUpload,
   Menu,
+  MapPin,
   X,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
@@ -32,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/triage', label: 'AI Triage', icon: Activity },
   { to: '/voice', label: 'Voice Assistant', icon: Mic },
   { to: '/emergency', label: 'Emergency', icon: Siren },
+  { to: '/find-care', label: 'Find Care', icon: MapPin },
   { to: '/teleconsult', label: 'Tele-Consult', icon: Video },
   { to: '/inventory', label: 'PHC Inventory', icon: Package },
   { to: '/sync', label: 'Offline Sync', icon: CloudUpload },

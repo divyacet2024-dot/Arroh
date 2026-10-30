@@ -3,9 +3,11 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.care_prescription import CarePrescription
+from app.db.models.consultation import Consultation
 from app.db.models.patient import Patient
 from app.db.session import get_db_session
 from app.schemas.prescription import CarePrescriptionCreateSchema, CarePrescriptionReadSchema
@@ -21,9 +23,18 @@ async def create_care_prescription(payload: CarePrescriptionCreateSchema, db: As
 
     if await db.get(Patient, payload.patient_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    consultation_id = payload.consultation_id
+    if consultation_id is None and payload.consultation_local_uuid:
+        consultation = await db.scalar(
+            select(Consultation).where(Consultation.local_uuid == payload.consultation_local_uuid)
+        )
+        if consultation is not None:
+            consultation_id = consultation.id
+
     created_at = datetime.now(timezone.utc)
     prescription = CarePrescription(
-        consultation_id=payload.consultation_id,
+        consultation_id=consultation_id,
         patient_id=payload.patient_id,
         doctor_id=payload.doctor_id,
         diagnosis=payload.diagnosis,

@@ -30,6 +30,17 @@ from app.services.case_taking_service import CaseTakingService
 from app.services.rag_service import get_knowledge_base
 
 
+def _staff_headers(client: TestClient) -> dict:
+    """Register a disposable staff account and return Authorization headers."""
+    email = f"staff-as-{uuid.uuid4()}@test.local"
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={"name": "Test Staff", "email": email, "password": "TestPass123!"},
+    )
+    assert resp.status_code == 201, resp.text
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
 def create_patient(client: TestClient, abha_id: str = "98765432101234") -> dict:
     response = client.post(
         "/api/v1/patients/",
@@ -131,7 +142,8 @@ def test_pregnant_kannada_preeclampsia_scenario(client: TestClient) -> None:
     assert fetch_response.json()["patient_local_uuid"] == patient["id"]
 
     # Timeline contains the new events.
-    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline")
+    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline",
+                          headers=_staff_headers(client))
     assert timeline.status_code == 200
     event_types = {event["event_type"] for event in timeline.json()["events"]}
     assert "CASE_TAKING" in event_types

@@ -70,7 +70,7 @@ class PatientBase(BaseModel):
 class PatientCreate(PatientBase):
     """Payload used to register a new patient at a PHC."""
 
-    abha_id: str = Field(pattern=r"^\d{14}$", description="Required 14-digit ABHA number")
+    abha_id: str | None = Field(default=None, pattern=r"^\d{14}$", description="Optional 14-digit ABHA number")
     is_synced_offline: bool = False
 
 

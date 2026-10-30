@@ -42,8 +42,8 @@ function greeting(lang: string): string {
 export function Welcome() {
   const { language, setLanguage, t } = useI18n();
   const navigate = useNavigate();
-  const { isAuthenticated: isDoctor }  = useAuth();
-  const { isAuthenticated: isPatient } = usePatientAuth();
+  const { isAuthenticated: isDoctor, isSessionReady: isDoctorSessionReady } = useAuth();
+  const { isAuthenticated: isPatient, isSessionReady: isPatientSessionReady } = usePatientAuth();
 
   const [aiText, setAiText] = useState('');
   const [userText, setUserText] = useState('');
@@ -52,9 +52,10 @@ export function Welcome() {
 
   // Redirect already-authenticated users.
   useEffect(() => {
+    if (!isDoctorSessionReady || !isPatientSessionReady) return;
     if (isPatient) navigate('/patient', { replace: true });
     else if (isDoctor) navigate('/doctor', { replace: true });
-  }, [isPatient, isDoctor, navigate]);
+  }, [isPatient, isDoctor, isDoctorSessionReady, isPatientSessionReady, navigate]);
 
   const handleTranscript = useCallback((text: string) => {
     setUserText(text);

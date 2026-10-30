@@ -2,6 +2,17 @@
 
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+import uuid as _uuid_module
+
+
+def _staff_headers(client):
+    email = f"staff-cw-{_uuid_module.uuid4()}@test.local"
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={"name": "Test Staff", "email": email, "password": "TestPass123!"},
+    )
+    assert resp.status_code == 201, resp.text
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 
 def _patient(client):
@@ -68,7 +79,8 @@ def test_referral_consultation_diagnostics_discharge_follow_up_timeline(client):
     assert summary.json()["discharge_plan"]["treatment_instructions"] == "Continue clinician-directed observation"
     assert summary.json()["follow_up_id"]
 
-    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline").json()["events"]
+    timeline = client.get(f"/api/v1/patients/{patient['id']}/timeline",
+                          headers=_staff_headers(client)).json()["events"]
     event_types = {event["event_type"] for event in timeline}
     assert {"CONSULTATION_STARTED", "CONSULTATION_COMPLETED", "DIAGNOSTIC_REQUESTED", "DIAGNOSTIC_RESULT_RECORDED", "DISCHARGE_PLAN_CREATED", "FOLLOW_UP_CREATED"}.issubset(event_types)
     assert any(event["details"].get("reference_id") == plan["id"] for event in timeline if event["event_type"] == "DISCHARGE_PLAN_CREATED")

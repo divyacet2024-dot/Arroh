@@ -14,9 +14,10 @@ Security invariants:
 
 import re
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,7 @@ from app.services.otp_service import (
 from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(prefix="/patient-auth", tags=["Patient Authentication"])
+_bearer_scheme = HTTPBearer(auto_error=False)
 _settings = get_settings()
 
 # ── Phone normalisation ──────────────────────────────────────────────────────
@@ -115,6 +117,15 @@ async def request_otp(
     payload: OtpRequestBody,
     db: AsyncSession = Depends(get_db_session),
 ) -> OtpRequestResponse:
+    if _settings.api_env != "development":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "otp_delivery_unavailable",
+                "message": "OTP delivery is not configured. Please contact the service administrator.",
+            },
+        )
+
     phone = payload.phone_number
 
     existing: OtpRecord | None = await db.scalar(
@@ -132,7 +143,7 @@ async def request_otp(
 
     otp_hash, dev_code = generate_and_hash_otp(phone)
     expiry = otp_expiry()
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     if existing is not None:
         existing.otp_hash    = otp_hash
@@ -147,9 +158,9 @@ async def request_otp(
     # dev_code is None in production — never forward it.
 
     return OtpRequestResponse(
-        message="OTP ಕಳಿಸಲಾಗಿದೆ.",
+        message="Development OTP generated. No SMS was sent.",
         resend_after_seconds=resend_cooldown_seconds(),
-        dev_otp=dev_code if _settings.api_env == "development" else None,
+        dev_otp=dev_code,
     )
 
 
@@ -202,7 +213,7 @@ async def verify_otp_endpoint(
             detail=_ERRORS.get(reason, {"code": reason, "message": "OTP ದೋಷ."}),
         )
 
-    record.verified_at = datetime.utcnow()
+    record.verified_at = datetime.now(UTC)
 
     # Upsert a minimal patient row for this phone number.
     patient: Patient | None = await db.scalar(
@@ -240,17 +251,10 @@ async def verify_otp_endpoint(
 @router.get("/me", response_model=PatientTokenUser,
             summary="Validate patient token and return identity")
 async def patient_me(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db_session),
 ) -> PatientTokenUser:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Missing bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    patient_id = parse_user_id(token)
-    if patient_id is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Invalid or expired token")
+    patient_id = _require_patient(credentials)
     patient = await db.get(Patient, patient_id)
     if patient is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
@@ -268,12 +272,11 @@ async def patient_me(
 # Authorization: the bearer token identifies the patient; they can only
 # read records where patient_id matches their own UUID.
 
-def _require_patient(authorization: str | None) -> uuid.UUID:
+def _require_patient(credentials: HTTPAuthorizationCredentials | None) -> uuid.UUID:
     """Extract and validate patient UUID from a bearer token. Raises 401 on failure."""
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    patient_id = parse_user_id(token)
+    patient_id = parse_user_id(credentials.credentials)
     if patient_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
     return patient_id
@@ -281,12 +284,12 @@ def _require_patient(authorization: str | None) -> uuid.UUID:
 
 @router.get("/prescriptions", summary="List prescriptions for the authenticated patient")
 async def get_patient_prescriptions(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Return all care prescriptions for the authenticated patient (newest first)."""
     from app.db.models.care_prescription import CarePrescription
-    patient_id = _require_patient(authorization)
+    patient_id = _require_patient(credentials)
     rows = (await db.scalars(
         select(CarePrescription)
         .where(CarePrescription.patient_id == patient_id)
@@ -309,12 +312,12 @@ async def get_patient_prescriptions(
 
 @router.get("/consultations", summary="List consultations for the authenticated patient")
 async def get_patient_consultations(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Return consultation summaries the patient may read (no raw clinical notes leaked)."""
     from app.db.models.consultation import Consultation, DischargePlan
-    patient_id = _require_patient(authorization)
+    patient_id = _require_patient(credentials)
     rows = (await db.scalars(
         select(Consultation)
         .where(Consultation.patient_id == patient_id)
@@ -347,12 +350,12 @@ async def get_patient_consultations(
 
 @router.get("/appointments", summary="List upcoming appointments (visits) for the authenticated patient")
 async def get_patient_appointments(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Return the patient's visit/appointment records (newest first, limit 20)."""
     from app.db.models.visit import Visit
-    patient_id = _require_patient(authorization)
+    patient_id = _require_patient(credentials)
     rows = (await db.scalars(
         select(Visit)
         .where(Visit.patient_id == patient_id)
@@ -375,12 +378,12 @@ async def get_patient_appointments(
 
 @router.get("/follow-ups", summary="List follow-ups for the authenticated patient")
 async def get_patient_follow_ups(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     """Return the patient's follow-up records."""
     from app.db.models.follow_up import FollowUp
-    patient_id = _require_patient(authorization)
+    patient_id = _require_patient(credentials)
     rows = (await db.scalars(
         select(FollowUp)
         .where(FollowUp.patient_id == patient_id)

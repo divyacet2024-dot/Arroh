@@ -6,7 +6,7 @@
  * handling and timeouts stay in one place.
  */
 
-import axios, { AxiosError, type AxiosRequestConfig } from 'axios';
+import axios, { AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios';
 
 const baseURL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
 
@@ -68,9 +68,54 @@ const httpClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** Read a persisted session token from localStorage without throwing. */
+function readToken(storageKey: string): string | null {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { token?: string | null };
+    return parsed?.token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear a persisted session (used on confirmed 401). */
+function clearSession(storageKey: string): void {
+  try {
+    localStorage.removeItem(storageKey);
+  } catch {
+    /* ignore */
+  }
+}
+
+httpClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  const url = config.url ?? '';
+  const isPatientAuth = url.includes('/patient-auth/');
+  const token = isPatientAuth
+    ? readToken('arroh.patient.session')
+    : readToken('arroh.auth.session');
+  if (token) {
+    config.headers = config.headers ?? {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 httpClient.interceptors.response.use(
   (response) => response,
-  (error: AxiosError) => Promise.reject(mapTransportError(error)),
+  (error: AxiosError) => {
+    const status = error.response?.status;
+    const url = error.config?.url ?? '';
+    if (status === 401) {
+      if (url.includes('/patient-auth/')) {
+        clearSession('arroh.patient.session');
+      } else {
+        clearSession('arroh.auth.session');
+      }
+    }
+    return Promise.reject(mapTransportError(error));
+  },
 );
 
 /** Perform a typed request and return only the data payload. */

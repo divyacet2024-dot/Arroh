@@ -3,6 +3,8 @@ package in.arroh.medical;
 import android.content.Context;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+import android.speech.tts.Voice;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -12,16 +14,18 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Minimal offline TextToSpeech bridge.
  *
  * Wraps the Android system {@link TextToSpeech} engine. It only ever reports a
- * language as available when the engine confirms the locale (and its offline
- * voice data) is present via {@link TextToSpeech#isLanguageAvailable}. It never
- * falls back to a network/cloud voice and never pretends a language is
- * available offline just because the locale "exists".
+ * language as available when the engine exposes a matching {@link Voice} that
+ * does not require a network connection. It never falls back to a network
+ * voice. A real device test is still required to confirm audio output.
  *
  * The six ARROH application locales are en-IN, hi-IN, ta-IN, kn-IN, te-IN,
  * ml-IN. Availability per language is queried truthfully on the device.
@@ -45,15 +49,54 @@ public class OfflineTtsPlugin extends Plugin {
 
     private TextToSpeech tts;
     private final AtomicBoolean ready = new AtomicBoolean(false);
+    private volatile String initializationError;
 
     @Override
     public void load() {
         Context context = getContext();
         tts = new TextToSpeech(context, status -> {
             if (status == TextToSpeech.SUCCESS) {
+                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override
+                    public void onStart(String utteranceId) {
+                        notifyTtsEvent("ttsStart", utteranceId, null);
+                    }
+
+                    @Override
+                    public void onDone(String utteranceId) {
+                        notifyTtsEvent("ttsDone", utteranceId, null);
+                    }
+
+                    @Override
+                    public void onError(String utteranceId) {
+                        notifyTtsEvent("ttsError", utteranceId, "Speech synthesis failed.");
+                    }
+
+                    @Override
+                    public void onError(String utteranceId, int errorCode) {
+                        notifyTtsEvent("ttsError", utteranceId, "Speech synthesis failed.");
+                    }
+
+                    @Override
+                    public void onStop(String utteranceId, boolean interrupted) {
+                        notifyTtsEvent("ttsStop", utteranceId, null);
+                    }
+                });
                 ready.set(true);
+            } else {
+                initializationError = "Android TextToSpeech initialization failed.";
             }
         });
+    }
+
+    @PluginMethod
+    public void isReady(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("ready", ready.get());
+        if (initializationError != null) {
+            result.put("error", initializationError);
+        }
+        call.resolve(result);
     }
 
     /**
@@ -64,13 +107,19 @@ public class OfflineTtsPlugin extends Plugin {
      */
     @PluginMethod
     public void getVoices(PluginCall call) {
+        if (!requireReady(call)) return;
         JSArray voices = new JSArray();
         for (int i = 0; i < SUPPORTED_LOCALES.length; i++) {
             Locale locale = SUPPORTED_LOCALES[i];
+            List<Voice> matchingVoices = getMatchingVoices(locale);
+            Voice offlineVoice = getOfflineVoice(matchingVoices, locale);
+            boolean networkOnly = !matchingVoices.isEmpty() && offlineVoice == null;
             JSObject voice = new JSObject();
             voice.put("language", locale.toLanguageTag());
             voice.put("label", SUPPORTED_LABELS[i]);
-            voice.put("available", isLanguageAvailable(locale));
+            voice.put("available", offlineVoice != null);
+            voice.put("requiresNetworkConnection", networkOnly);
+            voice.put("voiceName", offlineVoice != null ? offlineVoice.getName() : null);
             voices.put(voice);
         }
         JSObject ret = new JSObject();
@@ -86,16 +135,21 @@ public class OfflineTtsPlugin extends Plugin {
      */
     @PluginMethod
     public void checkLanguage(PluginCall call) {
+        if (!requireReady(call)) return;
         String tag = call.getString("language");
         if (tag == null || tag.isEmpty()) {
             call.reject("language is required");
             return;
         }
         Locale locale = Locale.forLanguageTag(tag);
-        boolean available = isLanguageAvailable(locale);
+        List<Voice> matchingVoices = getMatchingVoices(locale);
+        Voice offlineVoice = getOfflineVoice(matchingVoices, locale);
+        boolean networkOnly = !matchingVoices.isEmpty() && offlineVoice == null;
         JSObject ret = new JSObject();
         ret.put("language", tag);
-        ret.put("available", available);
+        ret.put("available", offlineVoice != null);
+        ret.put("requiresNetworkConnection", networkOnly);
+        ret.put("voiceName", offlineVoice != null ? offlineVoice.getName() : null);
         ret.put("label", locale.getDisplayLanguage() + " (" + locale.getCountry() + ")");
         call.resolve(ret);
     }
@@ -109,8 +163,10 @@ public class OfflineTtsPlugin extends Plugin {
      */
     @PluginMethod
     public void speak(PluginCall call) {
+        if (!requireReady(call)) return;
         String text = call.getString("text");
         String tag = call.getString("language");
+        String utteranceId = call.getString("utteranceId");
         Float rate = call.getFloat("rate", 1.0f);
 
         if (text == null || text.isEmpty()) {
@@ -121,26 +177,25 @@ public class OfflineTtsPlugin extends Plugin {
             call.reject("language is required");
             return;
         }
-        if (!ready.get() || tts == null) {
-            call.reject("TextToSpeech engine is not ready");
+        if (utteranceId == null || utteranceId.isEmpty()) {
+            call.reject("utteranceId is required");
             return;
         }
 
         Locale locale = Locale.forLanguageTag(tag);
-        if (!isLanguageAvailable(locale)) {
-            call.reject("Offline voice for '" + tag + "' is not installed on this device");
+        List<Voice> matchingVoices = getMatchingVoices(locale);
+        Voice voice = getOfflineVoice(matchingVoices, locale);
+        if (voice == null) {
+            call.reject(matchingVoices.isEmpty()
+                ? "No installed voice is available for '" + tag + "'"
+                : "The installed voice for '" + tag + "' requires a network connection");
             return;
         }
 
-        int setResult = tts.setLanguage(locale);
-        if (setResult == TextToSpeech.LANG_MISSING_DATA || setResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-            call.reject("Offline voice data for '" + tag + "' is missing on this device");
-            return;
-        }
-
+        tts.setVoice(voice);
         tts.setSpeechRate(rate);
         Bundle params = new Bundle();
-        int speakResult = tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "arroh-" + System.nanoTime());
+        int speakResult = tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId);
         if (speakResult == TextToSpeech.ERROR) {
             call.reject("TextToSpeech failed to start the utterance");
             return;
@@ -148,6 +203,7 @@ public class OfflineTtsPlugin extends Plugin {
 
         JSObject ret = new JSObject();
         ret.put("success", true);
+        ret.put("utteranceId", utteranceId);
         ret.put("message", "queued");
         call.resolve(ret);
     }
@@ -161,18 +217,48 @@ public class OfflineTtsPlugin extends Plugin {
         call.resolve();
     }
 
-    /**
-     * Map the engine's language-availability result to a boolean that is only
-     * true when voice data is present for offline synthesis.
-     */
-    private boolean isLanguageAvailable(Locale locale) {
-        if (tts == null || !ready.get()) {
-            return false;
+    private boolean requireReady(PluginCall call) {
+        if (ready.get() && tts != null) return true;
+        call.reject(initializationError != null
+            ? initializationError
+            : "Android TextToSpeech engine is still initializing");
+        return false;
+    }
+
+    private List<Voice> getMatchingVoices(Locale requestedLocale) {
+        List<Voice> matches = new ArrayList<>();
+        if (tts == null || tts.getVoices() == null) return matches;
+        Set<Voice> voices = tts.getVoices();
+        for (Voice voice : voices) {
+            Locale voiceLocale = voice.getLocale();
+            if (!voiceLocale.getLanguage().equalsIgnoreCase(requestedLocale.getLanguage())) continue;
+            String requestedCountry = requestedLocale.getCountry();
+            String voiceCountry = voiceLocale.getCountry();
+            if (requestedCountry.isEmpty() || voiceCountry.isEmpty()
+                || voiceCountry.equalsIgnoreCase(requestedCountry)) {
+                matches.add(voice);
+            }
         }
-        int result = tts.isLanguageAvailable(locale);
-        return result == TextToSpeech.LANG_AVAILABLE
-            || result == TextToSpeech.LANG_COUNTRY_AVAILABLE
-            || result == TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE;
+        return matches;
+    }
+
+    private Voice getOfflineVoice(List<Voice> voices, Locale requestedLocale) {
+        Voice best = null;
+        for (Voice voice : voices) {
+            if (voice.isNetworkConnectionRequired()) continue;
+            if (best == null
+                || voice.getLocale().getCountry().equalsIgnoreCase(requestedLocale.getCountry())) {
+                best = voice;
+            }
+        }
+        return best;
+    }
+
+    private void notifyTtsEvent(String eventName, String utteranceId, String message) {
+        JSObject event = new JSObject();
+        event.put("utteranceId", utteranceId);
+        if (message != null) event.put("message", message);
+        notifyListeners(eventName, event);
     }
 
     @Override
